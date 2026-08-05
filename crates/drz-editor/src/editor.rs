@@ -99,6 +99,26 @@ impl CodeEditor {
         *scroll = output.state.offset;
     }
 
+    /// Row-aligned variant of [`CodeEditor::show`]: `row_map[row]` gives the
+    /// document line for display row `row` (`None` = padding row), used by the
+    /// side-by-side diff view to keep both panes row-for-row aligned.
+    pub fn show_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        vm: &mut EditorViewModel,
+        row_map: &[Option<usize>],
+        total_rows: usize,
+        scroll: &mut egui::Vec2,
+    ) {
+        self.show(
+            ui,
+            vm,
+            Some(&move |row| row_map.get(row).copied().flatten()),
+            total_rows,
+            scroll,
+        );
+    }
+
     fn handle_keys(&mut self, ui: &mut egui::Ui, vm: &mut EditorViewModel) {
         let (line, col) = self.cursor;
         // Snap col to a char boundary before any slice/insert: arrows move

@@ -101,6 +101,15 @@ impl CodeEditor {
 
     fn handle_keys(&mut self, ui: &mut egui::Ui, vm: &mut EditorViewModel) {
         let (line, col) = self.cursor;
+        // Snap col to a char boundary before any slice/insert: arrows move
+        // bytewise and can leave col mid-char. Covers Text/Enter (rope insert
+        // requires boundary byte index) and Backspace (str slice).
+        let col = if line < vm.len_lines() {
+            floor_col_boundary(&vm.line(line), col)
+        } else {
+            col
+        };
+        self.cursor.1 = col;
         ui.input(|i| {
             for event in &i.events {
                 match event {
@@ -164,6 +173,17 @@ pub(crate) fn x_to_col(x: f32, char_width: f32) -> usize {
     (x / char_width).round().max(0.0) as usize
 }
 
+/// Floor a byte col to the nearest char boundary (col semantics stay byte offsets).
+/// Cursor col can land mid-char because arrows move bytewise; slicing/inserting
+/// at a non-boundary byte would panic.
+pub(crate) fn floor_col_boundary(line: &str, col: usize) -> usize {
+    let mut col = col.min(line.len());
+    while col > 0 && !line.is_char_boundary(col) {
+        col -= 1;
+    }
+    col
+}
+
 fn max_line_cols(vm: &EditorViewModel) -> usize {
     (0..vm.len_lines()).map(|i| vm.line(i).len()).max().unwrap_or(40).max(40)
 }
@@ -213,5 +233,29 @@ mod tests {
         assert_eq!(x_to_col(3.9, 8.0), 0);
         assert_eq!(x_to_col(4.1, 8.0), 1);
         assert_eq!(x_to_col(80.0, 8.0), 10);
+    }
+
+    #[test]
+    fn floor_col_boundary_snaps_to_char_start() {
+        let s = "aé💣b"; // a=1B, é=2B, 💣=4B, b=1B
+        assert_eq!(floor_col_boundary(s, 0), 0);
+        assert_eq!(floor_col_boundary(s, 1), 1);
+        assert_eq!(floor_col_boundary(s, 2), 1); // mid é
+        assert_eq!(floor_col_boundary(s, 3), 3);
+        assert_eq!(floor_col_boundary(s, 4), 3); // mid 💣
+        assert_eq!(floor_col_boundary(s, 5), 3);
+        assert_eq!(floor_col_boundary(s, 6), 3);
+        assert_eq!(floor_col_boundary(s, 7), 7);
+        assert_eq!(floor_col_boundary(s, 8), 8); // end of string
+        assert_eq!(floor_col_boundary(s, 100), 8); // beyond len clamps
+    }
+
+    #[test]
+    fn backspace_mid_char_col_no_panic() {
+        // mirrors the Backspace code path: floor col, slice, measure prev char
+        let line = "aé💣b";
+        let col = floor_col_boundary(line, 5); // mid 💣
+        let prev_char_len = line[..col].chars().last().map(|c| c.len_utf8()).unwrap_or(1);
+        assert_eq!((col, prev_char_len), (3, 2)); // deletes é, not partial 💣
     }
 }

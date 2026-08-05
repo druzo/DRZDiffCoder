@@ -75,8 +75,8 @@ Desktop source-code diff/merge app:
 
 ## 4. Phasing
 
-1. **Phase 1 (MVP):** 2-file compare, editable panes, incremental highlight, save, difftool CLI mode, scroll sync, connector lines.
-2. **Phase 2:** 3-way merge (base/local/remote → result), mergetool mode.
+1. **Phase 1 (MVP):** 2-file compare, editable panes, incremental highlight, save, difftool CLI mode, scroll sync, center-strip change bands.
+2. **Phase 2:** 3-way merge (base/local/remote → result), mergetool mode, connector polygons between panes.
 3. **Phase 3:** repo browsing (git status/commit diffs); libgit2-vs-CLI decided then.
 
 ## 5. Data flow
@@ -94,7 +94,7 @@ key → rope edit (O(log n))
     → repaint
 ```
 
-**Scroll sync:** both panes share scroll offset model; alignment computed from diff hunks (equal blocks align, changed blocks padded with virtual blank lines); connector polygon drawn between panes.
+**Scroll sync:** both panes share scroll offset model; alignment computed from diff hunks (equal blocks align, changed blocks padded with virtual blank lines). Phase 1: change bands in center strip. Phase 2: connector polygons between panes.
 
 **Merge action:** click chunk arrow → apply inverse diff hunk to other pane's rope → same incremental pipeline re-runs.
 

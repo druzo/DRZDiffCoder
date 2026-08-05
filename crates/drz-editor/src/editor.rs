@@ -76,8 +76,12 @@ impl CodeEditor {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let row = ((pos.y - rect.top()) / row_height).floor() as usize;
                         let col = x_to_col(pos.x - rect.left() - gutter_width, char_width);
+                        // On a padding row the line_of_row closure returns
+                        // None; clamp to the last valid line so a stale
+                        // cursor (potentially == len_lines) can't survive
+                        // into the next line_byte_range call and panic.
                         let line = match line_of_row {
-                            Some(f) => f(row).unwrap_or(self.cursor.0),
+                            Some(f) => f(row).unwrap_or_else(|| vm.len_lines().saturating_sub(1)),
                             None => row.min(vm.len_lines().saturating_sub(1)),
                         };
                         let (span_start, span_end) = vm.line_byte_range(line);

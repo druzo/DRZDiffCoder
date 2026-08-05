@@ -74,7 +74,13 @@ impl Document {
         self.rope.len_lines()
     }
 
+    /// Returns the line text without its trailing newline. Out-of-bounds
+    /// indices return an empty string rather than panicking — callers
+    /// (e.g. `merge_chunk` with stale hunk indices) must not panic.
     pub fn line(&self, idx: usize) -> String {
+        if idx >= self.rope.len_lines() {
+            return String::new();
+        }
         let line = self.rope.line(idx);
         let mut s = line.to_string();
         while s.ends_with('\n') || s.ends_with('\r') {
@@ -83,7 +89,13 @@ impl Document {
         s
     }
 
+    /// `(start_byte, end_byte)` of the line (excluding trailing newline).
+    /// Out-of-bounds indices clamp to EOF so stale hunk indices can't panic.
     pub fn line_byte_range(&self, idx: usize) -> (usize, usize) {
+        let len = self.rope.len_lines();
+        if idx >= len {
+            return (self.rope.len_bytes(), self.rope.len_bytes());
+        }
         let start = self.rope.line_to_byte(idx);
         let line = self.rope.line(idx);
         let mut len = line.len_bytes();
@@ -104,6 +116,10 @@ impl Document {
     /// decides whether a trailing '\n' is appended to a non-empty
     /// replacement. An empty replacement is always inserted verbatim, so a
     /// pure deletion never leaves a blank line behind.
+    ///
+    /// Stale or out-of-range `start`/`end` (e.g. from a merge arrow clicked
+    /// before the background diff updated) are clamped to valid byte ranges
+    /// rather than panicking inside ropey.
     pub fn line_replace_edit(
         &self,
         start: usize,
@@ -112,7 +128,19 @@ impl Document {
         policy: NewlinePolicy,
     ) -> TextEdit {
         let len = self.rope.len_lines();
-        let start_byte = self.rope.line_to_byte(start.min(len));
+        if start >= len {
+            // stale hunk past EOF: emit a zero-width TextEdit (empty inserted,
+            // equal start/old_end bytes) so `apply` is a true no-op and the
+            // doc is left unchanged. Inserting the caller's text at EOF would
+            // silently resurrect a line the caller never intended to add.
+            let _ = end;
+            return TextEdit {
+                start_byte: self.rope.len_bytes(),
+                old_end_byte: self.rope.len_bytes(),
+                inserted: String::new(),
+            };
+        }
+        let start_byte = self.rope.line_to_byte(start);
         let end_byte = if end >= len {
             self.rope.len_bytes()
         } else {

@@ -270,12 +270,20 @@ fn build_block(vm: &EditorViewModel, start: usize, end: usize) -> String {
     if start >= end {
         return String::new();
     }
+    // clamp end to current line count so a stale hunk (e.g. a merge arrow
+    // clicked before the background diff updated after an edit) can't panic
+    // by indexing past the new EOF.
+    let len = vm.len_lines();
+    let end = end.min(len);
+    if start >= end {
+        return String::new();
+    }
     let mut s = (start..end)
         .map(|i| vm.line(i))
         .collect::<Vec<_>>()
         .join("\n");
     // preserve trailing newline so following lines stay separate
-    if end < vm.len_lines() {
+    if end < len {
         s.push('\n');
     }
     s
@@ -564,5 +572,42 @@ mod tests {
             statuses(&vm, Side::Right),
             &[Unchanged, Added, Unchanged, Unchanged, Added]
         );
+    }
+
+    /// Regression for the ropey panic from clicking the merge arrow while a
+    /// background diff is still in flight (stale hunks, doc already shrunk).
+    /// merge_chunk must clamp instead of panicking inside `Document::line`.
+    #[test]
+    fn merge_chunk_does_not_panic_on_stale_hunk() {
+        let l = EditorViewModel::from_text("a\nb\nc\n", LanguageId::PlainText);
+        let r = EditorViewModel::from_text("a\nb\nc\n", LanguageId::PlainText);
+        let mut vm = DiffViewModel::new(l, r);
+        // inject a stale hunk: pretend there is a diff at line 2..50
+        // (way past the doc's 3 lines).
+        vm.hunks = vec![Hunk {
+            old_start: 2,
+            old_end: 50,
+            new_start: 2,
+            new_end: 50,
+        }];
+        // must not panic
+        vm.merge_chunk(0, MergeDirection::LeftToRight);
+        // doc unchanged because the stale range was clamped to EOF
+        assert_eq!(vm.left().document_text(), "a\nb\nc\n");
+        assert_eq!(vm.right().document_text(), "a\nb\nc\n");
+    }
+
+    /// `Document::line` and `line_byte_range` must clamp instead of panicking
+    /// when called with out-of-bounds indices (regression for the ropey panic).
+    #[test]
+    fn document_api_clamps_oob_indices() {
+        let doc = drz_core::Document::from_text("a\nb\n");
+        assert_eq!(doc.line(99), "");
+        let eof = doc.to_string().len();
+        assert_eq!(doc.line_byte_range(99), (eof, eof));
+        // replace_lines past EOF is a no-op, not a panic
+        let mut doc = drz_core::Document::from_text("a\nb\n");
+        doc.replace_lines(99, 100, "X");
+        assert_eq!(doc.to_string(), "a\nb\n");
     }
 }

@@ -38,7 +38,8 @@ impl EditorViewModel {
     }
 
     pub fn edit(&mut self, start_byte: usize, old_end_byte: usize, text: &str) {
-        let hl_edit = HighlightEdit::from_rope_edit(self.doc.rope(), start_byte, old_end_byte, text);
+        let hl_edit =
+            HighlightEdit::from_rope_edit(self.doc.rope(), start_byte, old_end_byte, text);
         self.doc.apply(&TextEdit {
             start_byte,
             old_end_byte,
@@ -77,27 +78,48 @@ impl EditorViewModel {
             Some(engine) => engine
                 .highlight_line(self.doc.rope(), line_idx)
                 .into_iter()
-                .map(|s| LineSpan { start: s.start, end: s.end, style: s.style })
+                .map(|s| LineSpan {
+                    start: s.start,
+                    end: s.end,
+                    style: s.style,
+                })
                 .collect(),
             None => Vec::new(),
         };
         (text, spans)
     }
 
-    pub fn len_lines(&self) -> usize { self.doc.len_lines() }
-    pub fn line(&self, idx: usize) -> String { self.doc.line(idx) }
-    pub fn line_byte_range(&self, idx: usize) -> (usize, usize) { self.doc.line_byte_range(idx) }
-    pub fn path(&self) -> Option<&Path> { self.doc.path() }
-    pub fn is_dirty(&self) -> bool { self.doc.is_dirty() }
-    pub fn encoding_guessed(&self) -> bool { self.doc.encoding_guessed() }
-    pub fn document_text(&self) -> String { self.doc.to_string() }
+    pub fn len_lines(&self) -> usize {
+        self.doc.len_lines()
+    }
+    pub fn line(&self, idx: usize) -> String {
+        self.doc.line(idx)
+    }
+    pub fn line_byte_range(&self, idx: usize) -> (usize, usize) {
+        self.doc.line_byte_range(idx)
+    }
+    pub fn path(&self) -> Option<&Path> {
+        self.doc.path()
+    }
+    pub fn is_dirty(&self) -> bool {
+        self.doc.is_dirty()
+    }
+    pub fn encoding_guessed(&self) -> bool {
+        self.doc.encoding_guessed()
+    }
+    pub fn document_text(&self) -> String {
+        self.doc.to_string()
+    }
 
     pub fn save(&mut self) -> Result<(), CoreError> {
         self.doc.save()
     }
 
     pub fn replace_lines(&mut self, start: usize, end: usize, text: &str) {
-        let start_byte = self.doc.rope().line_to_byte(start.min(self.doc.len_lines()));
+        let start_byte = self
+            .doc
+            .rope()
+            .line_to_byte(start.min(self.doc.len_lines()));
         let end_byte = if end >= self.doc.len_lines() {
             self.doc.rope().len_bytes()
         } else {

@@ -28,22 +28,34 @@ impl DiffView {
 
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
         ui.horizontal(|ui| {
-            self.left_editor
-                .show_rows(ui, vm.left_mut(), &alignment.left, total_rows, &mut self.scroll);
+            self.left_editor.show_rows(
+                ui,
+                vm.left_mut(),
+                &alignment.left,
+                total_rows,
+                &mut self.scroll,
+            );
             let (strip_rect, _) = ui.allocate_exact_size(
                 egui::vec2(STRIP_WIDTH, ui.available_height()),
                 egui::Sense::hover(),
             );
             let scroll_y = self.scroll.y;
             paint_strip(ui, strip_rect, &alignment, &hunks, row_height, scroll_y, vm);
-            self.right_editor
-                .show_rows(ui, vm.right_mut(), &alignment.right, total_rows, &mut self.scroll);
+            self.right_editor.show_rows(
+                ui,
+                vm.right_mut(),
+                &alignment.right,
+                total_rows,
+                &mut self.scroll,
+            );
         });
     }
 }
 
 impl Default for DiffView {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Paint hunk bands + merge arrow buttons in the center strip.
@@ -84,14 +96,10 @@ fn paint_strip(
         // merge buttons centered in the band (clamped into the strip)
         let mid_y = ((y0 + y1) / 2.0).clamp(strip_rect.top() + 8.0, strip_rect.bottom() - 8.0);
         let btn = egui::vec2(26.0, 16.0);
-        let to_right = egui::Rect::from_center_size(
-            egui::pos2(strip_rect.left() + 14.0, mid_y),
-            btn,
-        );
-        let to_left = egui::Rect::from_center_size(
-            egui::pos2(strip_rect.right() - 14.0, mid_y),
-            btn,
-        );
+        let to_right =
+            egui::Rect::from_center_size(egui::pos2(strip_rect.left() + 14.0, mid_y), btn);
+        let to_left =
+            egui::Rect::from_center_size(egui::pos2(strip_rect.right() - 14.0, mid_y), btn);
         if ui
             .put(to_right, egui::Button::new("\u{2192}").small())
             .on_hover_text("Apply left \u{2192} right")
@@ -153,7 +161,12 @@ mod tests {
 
     #[test]
     fn hunk_row_span_covers_changed_rows() {
-        let hunks = vec![Hunk { old_start: 1, old_end: 2, new_start: 1, new_end: 3 }];
+        let hunks = vec![Hunk {
+            old_start: 1,
+            old_end: 2,
+            new_start: 1,
+            new_end: 3,
+        }];
         let a = build_alignment(&hunks, 3, 4);
         let span = hunk_row_span(&a, &hunks[0]);
         assert_eq!(span, 1..3); // rows 1,2 (row1 = changed line, row2 = left padding)
@@ -161,7 +174,12 @@ mod tests {
 
     #[test]
     fn hunk_row_span_pure_insert() {
-        let hunks = vec![Hunk { old_start: 2, old_end: 2, new_start: 2, new_end: 4 }];
+        let hunks = vec![Hunk {
+            old_start: 2,
+            old_end: 2,
+            new_start: 2,
+            new_end: 4,
+        }];
         let a = build_alignment(&hunks, 3, 5);
         let span = hunk_row_span(&a, &hunks[0]);
         assert_eq!(span, 2..4);

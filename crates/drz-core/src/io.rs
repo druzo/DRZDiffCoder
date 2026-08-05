@@ -64,7 +64,10 @@ mod tests {
         assert!(doc.is_dirty());
         doc.save().unwrap();
         assert!(!doc.is_dirty());
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "fn main() { /*x*/ }\n");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "fn main() { /*x*/ }\n"
+        );
     }
 
     #[test]

@@ -32,12 +32,21 @@ mod tests {
     fn detects_by_extension() {
         assert_eq!(LanguageId::from_path(Path::new("a.rs")), LanguageId::Rust);
         assert_eq!(LanguageId::from_path(Path::new("a.py")), LanguageId::Python);
-        assert_eq!(LanguageId::from_path(Path::new("a.js")), LanguageId::JavaScript);
+        assert_eq!(
+            LanguageId::from_path(Path::new("a.js")),
+            LanguageId::JavaScript
+        );
         assert_eq!(LanguageId::from_path(Path::new("a.c")), LanguageId::C);
         assert_eq!(LanguageId::from_path(Path::new("a.h")), LanguageId::C);
         assert_eq!(LanguageId::from_path(Path::new("a.cpp")), LanguageId::Cpp);
         assert_eq!(LanguageId::from_path(Path::new("a.hpp")), LanguageId::Cpp);
-        assert_eq!(LanguageId::from_path(Path::new("Makefile")), LanguageId::PlainText);
-        assert_eq!(LanguageId::from_path(Path::new("a.xyz")), LanguageId::PlainText);
+        assert_eq!(
+            LanguageId::from_path(Path::new("Makefile")),
+            LanguageId::PlainText
+        );
+        assert_eq!(
+            LanguageId::from_path(Path::new("a.xyz")),
+            LanguageId::PlainText
+        );
     }
 }

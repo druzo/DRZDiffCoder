@@ -25,8 +25,16 @@ pub fn build_alignment(hunks: &[Hunk], left_lines: usize, right_lines: usize) ->
         let new_len = h.new_end - h.new_start;
         let rows = old_len.max(new_len);
         for i in 0..rows {
-            left.push(if i < old_len { Some(h.old_start + i) } else { None });
-            right.push(if i < new_len { Some(h.new_start + i) } else { None });
+            left.push(if i < old_len {
+                Some(h.old_start + i)
+            } else {
+                None
+            });
+            right.push(if i < new_len {
+                Some(h.new_start + i)
+            } else {
+                None
+            });
         }
         l = h.old_end;
         r = h.new_end;
@@ -64,7 +72,12 @@ mod tests {
     #[test]
     fn unequal_replace_pads_shorter_side() {
         // left 1 line → right 3 lines at position 0
-        let hunks = vec![Hunk { old_start: 0, old_end: 1, new_start: 0, new_end: 3 }];
+        let hunks = vec![Hunk {
+            old_start: 0,
+            old_end: 1,
+            new_start: 0,
+            new_end: 3,
+        }];
         let a = build_alignment(&hunks, 1, 3);
         assert_eq!(a.left, vec![Some(0), None, None]);
         assert_eq!(a.right, vec![Some(0), Some(1), Some(2)]);

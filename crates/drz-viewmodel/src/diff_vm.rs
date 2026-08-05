@@ -29,7 +29,10 @@ impl DiffViewModel {
             left,
             right,
             hunks: Vec::new(),
-            alignment: Alignment { left: Vec::new(), right: Vec::new() },
+            alignment: Alignment {
+                left: Vec::new(),
+                right: Vec::new(),
+            },
             dirty_since: Some(Instant::now() - DEBOUNCE),
             in_flight: false,
             rx: None,
@@ -37,12 +40,16 @@ impl DiffViewModel {
         }
     }
 
-    pub fn left(&self) -> &EditorViewModel { &self.left }
+    pub fn left(&self) -> &EditorViewModel {
+        &self.left
+    }
     pub fn left_mut(&mut self) -> &mut EditorViewModel {
         self.dirty_since.get_or_insert(Instant::now());
         &mut self.left
     }
-    pub fn right(&self) -> &EditorViewModel { &self.right }
+    pub fn right(&self) -> &EditorViewModel {
+        &self.right
+    }
     pub fn right_mut(&mut self) -> &mut EditorViewModel {
         self.dirty_since.get_or_insert(Instant::now());
         &mut self.right
@@ -71,9 +78,7 @@ impl DiffViewModel {
                 }
             }
         }
-        let ready = self
-            .dirty_since
-            .is_some_and(|t| t.elapsed() >= DEBOUNCE);
+        let ready = self.dirty_since.is_some_and(|t| t.elapsed() >= DEBOUNCE);
         if ready && !self.in_flight {
             self.spawn_diff();
         }
@@ -105,19 +110,27 @@ impl DiffViewModel {
         self.alignment = build_alignment(&self.hunks, content_lines(&old), content_lines(&new));
     }
 
-    pub fn hunks(&self) -> &[Hunk] { &self.hunks }
-    pub fn alignment(&self) -> &Alignment { &self.alignment }
+    pub fn hunks(&self) -> &[Hunk] {
+        &self.hunks
+    }
+    pub fn alignment(&self) -> &Alignment {
+        &self.alignment
+    }
 
     pub fn merge_chunk(&mut self, hunk_idx: usize, dir: MergeDirection) {
-        let Some(h) = self.hunks.get(hunk_idx).copied() else { return };
+        let Some(h) = self.hunks.get(hunk_idx).copied() else {
+            return;
+        };
         match dir {
             MergeDirection::LeftToRight => {
                 let replacement = build_block(&self.left, h.old_start, h.old_end);
-                self.right.replace_lines(h.new_start, h.new_end, &replacement);
+                self.right
+                    .replace_lines(h.new_start, h.new_end, &replacement);
             }
             MergeDirection::RightToLeft => {
                 let replacement = build_block(&self.right, h.new_start, h.new_end);
-                self.left.replace_lines(h.old_start, h.old_end, &replacement);
+                self.left
+                    .replace_lines(h.old_start, h.old_end, &replacement);
             }
         }
         self.flush_diff_now();
@@ -134,7 +147,10 @@ fn build_block(vm: &EditorViewModel, start: usize, end: usize) -> String {
     if start >= end {
         return String::new();
     }
-    let mut s = (start..end).map(|i| vm.line(i)).collect::<Vec<_>>().join("\n");
+    let mut s = (start..end)
+        .map(|i| vm.line(i))
+        .collect::<Vec<_>>()
+        .join("\n");
     // preserve trailing newline so following lines stay separate
     if end < vm.len_lines() {
         s.push('\n');

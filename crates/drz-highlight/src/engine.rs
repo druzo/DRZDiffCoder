@@ -2,7 +2,9 @@ use crate::error::HighlightError;
 use crate::language::LanguageId;
 use crate::style::{Style, StyledSpan};
 use ropey::Rope;
-use tree_sitter::{InputEdit, Language, Parser, Point, Query, QueryCursor, StreamingIterator, Tree};
+use tree_sitter::{
+    InputEdit, Language, Parser, Point, Query, QueryCursor, StreamingIterator, Tree,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct HighlightEdit {
@@ -139,11 +141,7 @@ impl HighlightEngine {
         self.parse_with_rope(rope, None)
     }
 
-    pub fn apply_edit(
-        &mut self,
-        edit: &HighlightEdit,
-        rope: &Rope,
-    ) -> Result<(), HighlightError> {
+    pub fn apply_edit(&mut self, edit: &HighlightEdit, rope: &Rope) -> Result<(), HighlightError> {
         if let Some(tree) = &mut self.tree {
             tree.edit(&InputEdit {
                 start_byte: edit.start_byte,
@@ -214,7 +212,9 @@ mod tests {
 
     #[test]
     fn plaintext_returns_none() {
-        assert!(HighlightEngine::new(LanguageId::PlainText).unwrap().is_none());
+        assert!(HighlightEngine::new(LanguageId::PlainText)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -224,9 +224,13 @@ mod tests {
         eng.parse_full(&rope).unwrap();
         let spans = eng.highlight_line(&rope, 0);
         // "fn" at bytes 0..2 → Keyword
-        assert!(spans.iter().any(|s| s.start == 0 && s.end == 2 && s.style == Style::Keyword));
+        assert!(spans
+            .iter()
+            .any(|s| s.start == 0 && s.end == 2 && s.style == Style::Keyword));
         // "hi" string literal → StringLit covering bytes 20..24 (includes quotes)
-        assert!(spans.iter().any(|s| s.style == Style::StringLit && s.start <= 21 && s.end >= 24));
+        assert!(spans
+            .iter()
+            .any(|s| s.style == Style::StringLit && s.start <= 21 && s.end >= 24));
     }
 
     #[test]
@@ -278,6 +282,8 @@ mod tests {
         let rope = Rope::from_str("# hello\nx = 1\n");
         eng.parse_full(&rope).unwrap();
         let spans = eng.highlight_line(&rope, 0);
-        assert!(spans.iter().any(|s| s.style == Style::Comment && s.start == 0));
+        assert!(spans
+            .iter()
+            .any(|s| s.style == Style::Comment && s.start == 0));
     }
 }

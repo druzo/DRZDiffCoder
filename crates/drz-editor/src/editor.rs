@@ -10,7 +10,9 @@ impl CodeEditor {
         CodeEditor { cursor: (0, 0) }
     }
 
-    pub fn cursor(&self) -> (usize, usize) { self.cursor }
+    pub fn cursor(&self) -> (usize, usize) {
+        self.cursor
+    }
 
     pub fn show(
         &mut self,
@@ -26,7 +28,11 @@ impl CodeEditor {
         let dark = ui.visuals().dark_mode;
         let gutter_width = 48.0;
 
-        let rows = if line_of_row.is_some() { total_rows } else { vm.len_lines() };
+        let rows = if line_of_row.is_some() {
+            total_rows
+        } else {
+            vm.len_lines()
+        };
 
         let output = egui::ScrollArea::both()
             .id_salt(ui.id().with("editor_scroll"))
@@ -40,8 +46,10 @@ impl CodeEditor {
                     egui::Sense::click(),
                 );
                 let visible = ui.clip_rect();
-                let first_row = ((visible.top() - rect.top()) / row_height).floor().max(0.0) as usize;
-                let last_row = (((visible.bottom() - rect.top()) / row_height).ceil() as usize).min(rows);
+                let first_row =
+                    ((visible.top() - rect.top()) / row_height).floor().max(0.0) as usize;
+                let last_row =
+                    (((visible.bottom() - rect.top()) / row_height).ceil() as usize).min(rows);
 
                 if response.clicked() {
                     response.request_focus();
@@ -71,7 +79,7 @@ impl CodeEditor {
                         None => Some(row),
                     };
                     let Some(line) = line_opt else { continue }; // padding row
-                    // gutter
+                                                                 // gutter
                     painter.text(
                         egui::pos2(rect.left() + gutter_width - 8.0, y),
                         egui::Align2::RIGHT_TOP,
@@ -84,7 +92,11 @@ impl CodeEditor {
                     let mut job = egui::text::LayoutJob::default();
                     append_styled(&mut job, &text, &spans, &font_id, dark);
                     let galley = ui.fonts(|f| f.layout_job(job));
-                    painter.galley(egui::pos2(rect.left() + gutter_width, y), galley, egui::Color32::WHITE);
+                    painter.galley(
+                        egui::pos2(rect.left() + gutter_width, y),
+                        galley,
+                        egui::Color32::WHITE,
+                    );
                     // cursor
                     if focused && self.cursor.0 == line {
                         let cx = rect.left() + gutter_width + self.cursor.1 as f32 * char_width;
@@ -138,14 +150,25 @@ impl CodeEditor {
                         self.cursor.1 += t.len();
                         self.cursor.0 = self.cursor.0.min(vm.len_lines().saturating_sub(1));
                     }
-                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        ..
+                    } => {
                         vm.insert_at_line_col(line, col, "\n");
                         self.cursor = (line + 1, 0);
                     }
-                    egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Backspace,
+                        pressed: true,
+                        ..
+                    } => {
                         if col > 0 {
                             let prev_char_len = vm.line(line)[..col]
-                                .chars().last().map(|c| c.len_utf8()).unwrap_or(1);
+                                .chars()
+                                .last()
+                                .map(|c| c.len_utf8())
+                                .unwrap_or(1);
                             vm.delete_range_line_col((line, col - prev_char_len), (line, col));
                             self.cursor.1 -= prev_char_len;
                         } else if line > 0 {
@@ -154,17 +177,33 @@ impl CodeEditor {
                             self.cursor = (line - 1, prev_len);
                         }
                     }
-                    egui::Event::Key { key: egui::Key::ArrowLeft, pressed: true, .. } if col > 0 => {
+                    egui::Event::Key {
+                        key: egui::Key::ArrowLeft,
+                        pressed: true,
+                        ..
+                    } if col > 0 => {
                         self.cursor.1 -= 1;
                     }
-                    egui::Event::Key { key: egui::Key::ArrowRight, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::ArrowRight,
+                        pressed: true,
+                        ..
+                    } => {
                         self.cursor.1 = clamp_col(col + 1, vm.line(line).len());
                     }
-                    egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, .. } if line > 0 => {
+                    egui::Event::Key {
+                        key: egui::Key::ArrowUp,
+                        pressed: true,
+                        ..
+                    } if line > 0 => {
                         self.cursor.0 -= 1;
                         self.cursor.1 = clamp_col(col, vm.line(line - 1).len());
                     }
-                    egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, .. } if line + 1 < vm.len_lines() => {
+                    egui::Event::Key {
+                        key: egui::Key::ArrowDown,
+                        pressed: true,
+                        ..
+                    } if line + 1 < vm.len_lines() => {
                         self.cursor.0 += 1;
                         self.cursor.1 = clamp_col(col, vm.line(line + 1).len());
                     }
@@ -181,7 +220,9 @@ impl CodeEditor {
 }
 
 impl Default for CodeEditor {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub(crate) fn clamp_col(col: usize, line_byte_len: usize) -> usize {
@@ -189,7 +230,9 @@ pub(crate) fn clamp_col(col: usize, line_byte_len: usize) -> usize {
 }
 
 pub(crate) fn x_to_col(x: f32, char_width: f32) -> usize {
-    if char_width <= 0.0 { return 0; }
+    if char_width <= 0.0 {
+        return 0;
+    }
     (x / char_width).round().max(0.0) as usize
 }
 
@@ -205,7 +248,11 @@ pub(crate) fn floor_col_boundary(line: &str, col: usize) -> usize {
 }
 
 fn max_line_cols(vm: &EditorViewModel) -> usize {
-    (0..vm.len_lines()).map(|i| vm.line(i).len()).max().unwrap_or(40).max(40)
+    (0..vm.len_lines())
+        .map(|i| vm.line(i).len())
+        .max()
+        .unwrap_or(40)
+        .max(40)
 }
 
 fn append_styled(
@@ -217,13 +264,21 @@ fn append_styled(
 ) {
     let mut pos = 0usize;
     let mut push = |range: std::ops::Range<usize>, style: drz_viewmodel::types::Style| {
-        if range.start >= range.end || range.end > text.len() { return; }
-        if !text.is_char_boundary(range.start) || !text.is_char_boundary(range.end) { return; }
-        job.append(&text[range], 0.0, egui::TextFormat {
-            font_id: font_id.clone(),
-            color: style_color(style, dark),
-            ..Default::default()
-        });
+        if range.start >= range.end || range.end > text.len() {
+            return;
+        }
+        if !text.is_char_boundary(range.start) || !text.is_char_boundary(range.end) {
+            return;
+        }
+        job.append(
+            &text[range],
+            0.0,
+            egui::TextFormat {
+                font_id: font_id.clone(),
+                color: style_color(style, dark),
+                ..Default::default()
+            },
+        );
     };
     for s in spans {
         if s.start > pos {
@@ -275,7 +330,11 @@ mod tests {
         // mirrors the Backspace code path: floor col, slice, measure prev char
         let line = "aé💣b";
         let col = floor_col_boundary(line, 5); // mid 💣
-        let prev_char_len = line[..col].chars().last().map(|c| c.len_utf8()).unwrap_or(1);
+        let prev_char_len = line[..col]
+            .chars()
+            .last()
+            .map(|c| c.len_utf8())
+            .unwrap_or(1);
         assert_eq!((col, prev_char_len), (3, 2)); // deletes é, not partial 💣
     }
 }

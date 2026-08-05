@@ -1,5 +1,5 @@
-use ropey::Rope;
 use crate::edit::TextEdit;
+use ropey::Rope;
 use std::path::{Path, PathBuf};
 
 pub struct Document {
@@ -11,17 +11,35 @@ pub struct Document {
 
 impl Document {
     pub fn from_text(text: &str) -> Document {
-        Document { rope: Rope::from_str(text), path: None, dirty: false, encoding_guessed: false }
+        Document {
+            rope: Rope::from_str(text),
+            path: None,
+            dirty: false,
+            encoding_guessed: false,
+        }
     }
 
     pub fn from_file(text: String, path: PathBuf, encoding_guessed: bool) -> Document {
-        Document { rope: Rope::from_str(&text), path: Some(path), dirty: false, encoding_guessed }
+        Document {
+            rope: Rope::from_str(&text),
+            path: Some(path),
+            dirty: false,
+            encoding_guessed,
+        }
     }
 
-    pub fn path(&self) -> Option<&Path> { self.path.as_deref() }
-    pub fn is_dirty(&self) -> bool { self.dirty }
-    pub fn encoding_guessed(&self) -> bool { self.encoding_guessed }
-    pub fn mark_clean(&mut self) { self.dirty = false; }
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+    pub fn encoding_guessed(&self) -> bool {
+        self.encoding_guessed
+    }
+    pub fn mark_clean(&mut self) {
+        self.dirty = false;
+    }
 
     pub fn apply(&mut self, edit: &TextEdit) {
         let start = edit.start_byte.min(self.rope.len_bytes());
@@ -36,10 +54,6 @@ impl Document {
             self.rope.insert(s, &edit.inserted);
         }
         self.dirty = true;
-    }
-
-    pub fn to_string(&self) -> String {
-        self.rope.to_string()
     }
 
     pub fn len_lines(&self) -> usize {
@@ -61,9 +75,9 @@ impl Document {
         let mut len = line.len_bytes();
         // strip trailing \n / \r\n
         let s = line.as_str().unwrap_or("");
-        if s.ends_with('\n') {
+        if let Some(stripped) = s.strip_suffix('\n') {
             len -= 1;
-            if len > 0 && s[..s.len()-1].ends_with('\r') {
+            if len > 0 && stripped.ends_with('\r') {
                 len -= 1;
             }
         }
@@ -88,11 +102,24 @@ impl Document {
                 inserted.push('\n');
             }
         }
-        self.apply(&TextEdit { start_byte, old_end_byte: end_byte, inserted });
+        self.apply(&TextEdit {
+            start_byte,
+            old_end_byte: end_byte,
+            inserted,
+        });
     }
 
     pub fn rope(&self) -> &Rope {
         &self.rope
+    }
+}
+
+impl std::fmt::Display for Document {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for chunk in self.rope.chunks() {
+            f.write_str(chunk)?;
+        }
+        Ok(())
     }
 }
 
@@ -103,14 +130,22 @@ mod tests {
     #[test]
     fn apply_insert_updates_text() {
         let mut doc = Document::from_text("hello\nworld\n");
-        doc.apply(&TextEdit { start_byte: 0, old_end_byte: 0, inserted: ">> ".into() });
+        doc.apply(&TextEdit {
+            start_byte: 0,
+            old_end_byte: 0,
+            inserted: ">> ".into(),
+        });
         assert_eq!(doc.to_string(), ">> hello\nworld\n");
     }
 
     #[test]
     fn apply_delete_updates_text() {
         let mut doc = Document::from_text("hello\nworld\n");
-        doc.apply(&TextEdit { start_byte: 0, old_end_byte: 6, inserted: String::new() });
+        doc.apply(&TextEdit {
+            start_byte: 0,
+            old_end_byte: 6,
+            inserted: String::new(),
+        });
         assert_eq!(doc.to_string(), "world\n");
     }
 

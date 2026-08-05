@@ -9,7 +9,10 @@ pub struct AppViewModel {
 
 impl AppViewModel {
     pub fn empty() -> AppViewModel {
-        AppViewModel { diff: None, error: None }
+        AppViewModel {
+            diff: None,
+            error: None,
+        }
     }
 
     pub fn open_pair(left: &Path, right: &Path) -> AppViewModel {
@@ -20,10 +23,9 @@ impl AppViewModel {
 
     pub fn open_pair_command(&mut self, left: &Path, right: &Path) {
         let result = (|| -> Result<DiffViewModel, String> {
-            let l = EditorViewModel::open(left)
-                .map_err(|e| format!("{}: {e}", left.display()))?;
-            let r = EditorViewModel::open(right)
-                .map_err(|e| format!("{}: {e}", right.display()))?;
+            let l = EditorViewModel::open(left).map_err(|e| format!("{}: {e}", left.display()))?;
+            let r =
+                EditorViewModel::open(right).map_err(|e| format!("{}: {e}", right.display()))?;
             let mut d = DiffViewModel::new(l, r);
             d.flush_diff_now();
             Ok(d)
@@ -40,8 +42,12 @@ impl AppViewModel {
         }
     }
 
-    pub fn diff(&self) -> Option<&DiffViewModel> { self.diff.as_ref() }
-    pub fn diff_mut(&mut self) -> Option<&mut DiffViewModel> { self.diff.as_mut() }
+    pub fn diff(&self) -> Option<&DiffViewModel> {
+        self.diff.as_ref()
+    }
+    pub fn diff_mut(&mut self) -> Option<&mut DiffViewModel> {
+        self.diff.as_mut()
+    }
 
     pub fn save_all(&mut self) {
         if let Some(d) = &mut self.diff {
@@ -58,8 +64,12 @@ impl AppViewModel {
         }
     }
 
-    pub fn error(&self) -> Option<&str> { self.error.as_deref() }
-    pub fn dismiss_error(&mut self) { self.error = None; }
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+    pub fn dismiss_error(&mut self) {
+        self.error = None;
+    }
 
     pub fn title(&self) -> String {
         match &self.diff {
@@ -70,8 +80,17 @@ impl AppViewModel {
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "(untitled)".into())
                 };
-                let dirty = if d.left().is_dirty() || d.right().is_dirty() { " *" } else { "" };
-                format!("DRZDiffCoder — {} ↔ {}{}", name(d.left()), name(d.right()), dirty)
+                let dirty = if d.left().is_dirty() || d.right().is_dirty() {
+                    " *"
+                } else {
+                    ""
+                };
+                format!(
+                    "DRZDiffCoder — {} ↔ {}{}",
+                    name(d.left()),
+                    name(d.right()),
+                    dirty
+                )
             }
             None => "DRZDiffCoder".into(),
         }

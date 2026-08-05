@@ -1,0 +1,9 @@
+# crates/drz-editor/Cargo.toml
+[package]
+name = "drz-editor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui.workspace = true
+drz-viewmodel = { path = "../drz-viewmodel" }

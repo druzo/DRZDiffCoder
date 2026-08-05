@@ -1,0 +1,11 @@
+# crates/drz-core/Cargo.toml
+[package]
+name = "drz-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror.workspace = true
+ropey.workspace = true
+similar.workspace = true
+chardetng.workspace = true

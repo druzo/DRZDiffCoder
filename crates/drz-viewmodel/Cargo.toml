@@ -1,0 +1,9 @@
+# crates/drz-viewmodel/Cargo.toml
+[package]
+name = "drz-viewmodel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+drz-core = { path = "../drz-core" }
+drz-highlight = { path = "../drz-highlight" }

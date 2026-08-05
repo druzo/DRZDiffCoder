@@ -1,0 +1,10 @@
+# crates/drz-diff-ui/Cargo.toml
+[package]
+name = "drz-diff-ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui.workspace = true
+drz-viewmodel = { path = "../drz-viewmodel" }
+drz-editor = { path = "../drz-editor" }

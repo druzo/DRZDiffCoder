@@ -1,0 +1,22 @@
+# crates/drz-app/Cargo.toml
+[package]
+name = "drz-app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "drzdiff"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+eframe.workspace = true
+egui.workspace = true
+clap.workspace = true
+rfd.workspace = true
+drz-viewmodel = { path = "../drz-viewmodel" }
+drz-diff-ui = { path = "../drz-diff-ui" }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"

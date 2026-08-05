@@ -1,14 +1,27 @@
 use ropey::Rope;
 use crate::edit::TextEdit;
+use std::path::{Path, PathBuf};
 
 pub struct Document {
     rope: Rope,
+    path: Option<PathBuf>,
+    dirty: bool,
+    encoding_guessed: bool,
 }
 
 impl Document {
     pub fn from_text(text: &str) -> Document {
-        Document { rope: Rope::from_str(text) }
+        Document { rope: Rope::from_str(text), path: None, dirty: false, encoding_guessed: false }
     }
+
+    pub fn from_file(text: String, path: PathBuf, encoding_guessed: bool) -> Document {
+        Document { rope: Rope::from_str(&text), path: Some(path), dirty: false, encoding_guessed }
+    }
+
+    pub fn path(&self) -> Option<&Path> { self.path.as_deref() }
+    pub fn is_dirty(&self) -> bool { self.dirty }
+    pub fn encoding_guessed(&self) -> bool { self.encoding_guessed }
+    pub fn mark_clean(&mut self) { self.dirty = false; }
 
     pub fn apply(&mut self, edit: &TextEdit) {
         let start = edit.start_byte.min(self.rope.len_bytes());
@@ -22,6 +35,7 @@ impl Document {
             let s = self.rope.byte_to_char(start);
             self.rope.insert(s, &edit.inserted);
         }
+        self.dirty = true;
     }
 
     pub fn to_string(&self) -> String {
@@ -64,9 +78,15 @@ impl Document {
             self.rope.line_to_byte(end)
         };
         let mut inserted = text.to_string();
-        // Replacing whole lines: keep the line break so following lines stay intact.
-        if end_byte < self.rope.len_bytes() && !inserted.ends_with('\n') {
-            inserted.push('\n');
+        // Replacing whole lines: keep the line break so following lines stay
+        // intact, and preserve a trailing newline at end of document.
+        if !inserted.ends_with('\n') {
+            let removed_reached_newline = end_byte < self.rope.len_bytes()
+                || (self.rope.len_bytes() > 0
+                    && self.rope.byte(self.rope.len_bytes() - 1) == b'\n');
+            if removed_reached_newline {
+                inserted.push('\n');
+            }
         }
         self.apply(&TextEdit { start_byte, old_end_byte: end_byte, inserted });
     }

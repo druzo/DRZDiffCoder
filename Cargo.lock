@@ -1013,6 +1013,7 @@ name = "drz-core"
 version = "0.1.0"
 dependencies = [
  "chardetng",
+ "encoding_rs",
  "ropey",
  "similar",
  "thiserror 2.0.19",

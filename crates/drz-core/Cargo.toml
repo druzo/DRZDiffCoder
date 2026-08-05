@@ -9,3 +9,4 @@ thiserror.workspace = true
 ropey.workspace = true
 similar.workspace = true
 chardetng.workspace = true
+encoding_rs.workspace = true

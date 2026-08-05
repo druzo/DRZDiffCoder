@@ -35,6 +35,7 @@ impl CodeEditor {
         };
 
         let output = egui::ScrollArea::both()
+            .auto_shrink([false, false])
             .id_salt(ui.id().with("editor_scroll"))
             .scroll_offset(*scroll)
             .show(ui, |ui| {

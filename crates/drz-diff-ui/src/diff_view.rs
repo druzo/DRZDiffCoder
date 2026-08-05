@@ -27,29 +27,62 @@ impl DiffView {
         let total_rows = alignment.left.len();
 
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
-        ui.horizontal(|ui| {
-            self.left_editor.show_rows(
-                ui,
-                vm.left_mut(),
-                &alignment.left,
-                total_rows,
-                &mut self.scroll,
-            );
-            let (strip_rect, _) = ui.allocate_exact_size(
-                egui::vec2(STRIP_WIDTH, ui.available_height()),
-                egui::Sense::hover(),
-            );
-            let scroll_y = self.scroll.y;
-            paint_strip(ui, strip_rect, &alignment, &hunks, row_height, scroll_y, vm);
-            self.right_editor.show_rows(
-                ui,
-                vm.right_mut(),
-                &alignment.right,
-                total_rows,
-                &mut self.scroll,
-            );
-        });
+
+        let full = ui.available_rect_before_wrap();
+        let (left_rect, strip_rect, right_rect) = pane_rects(full, STRIP_WIDTH);
+
+        // Reserve all three rects in the parent layout so the cursor advances.
+        ui.allocate_rect(left_rect, egui::Sense::hover());
+        ui.allocate_rect(strip_rect, egui::Sense::hover());
+        ui.allocate_rect(right_rect, egui::Sense::hover());
+
+        let scroll_y = self.scroll.y;
+        paint_strip(ui, strip_rect, &alignment, &hunks, row_height, scroll_y, vm);
+
+        let mut left_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(left_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::LEFT).with_main_wrap(false)),
+        );
+        self.left_editor.show_rows(
+            &mut left_ui,
+            vm.left_mut(),
+            &alignment.left,
+            total_rows,
+            &mut self.scroll,
+        );
+
+        let mut right_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(right_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::LEFT).with_main_wrap(false)),
+        );
+        self.right_editor.show_rows(
+            &mut right_ui,
+            vm.right_mut(),
+            &alignment.right,
+            total_rows,
+            &mut self.scroll,
+        );
     }
+}
+
+/// Split `full` into three non-overlapping rects: left pane (half), strip
+/// (`strip_w` wide), right pane (remaining half). Pane widths clamp to ≥0
+/// when `full` is narrower than `strip_w`.
+pub(crate) fn pane_rects(full: egui::Rect, strip_w: f32) -> (egui::Rect, egui::Rect, egui::Rect) {
+    let strip_w = strip_w.min(full.width());
+    let pane_w = ((full.width() - strip_w) / 2.0).max(0.0);
+    let left = egui::Rect::from_min_size(full.min, egui::vec2(pane_w, full.height()));
+    let strip = egui::Rect::from_min_size(
+        egui::pos2(full.left() + pane_w, full.top()),
+        egui::vec2(strip_w, full.height()),
+    );
+    let right = egui::Rect::from_min_size(
+        egui::pos2(full.left() + pane_w + strip_w, full.top()),
+        egui::vec2(pane_w, full.height()),
+    );
+    (left, strip, right)
 }
 
 impl Default for DiffView {
@@ -183,5 +216,52 @@ mod tests {
         let a = build_alignment(&hunks, 3, 5);
         let span = hunk_row_span(&a, &hunks[0]);
         assert_eq!(span, 2..4);
+    }
+
+    fn rect(min: egui::Pos2, max: egui::Pos2) -> egui::Rect {
+        egui::Rect { min, max }
+    }
+
+    #[test]
+    fn pane_rects_half_width_full_height() {
+        let full = rect(egui::pos2(0.0, 0.0), egui::pos2(1280.0, 800.0));
+        let (l, s, r) = pane_rects(full, 60.0);
+        // total = left + strip + right; strip centered between panes
+        assert_eq!(l.width(), 610.0);
+        assert_eq!(s.width(), 60.0);
+        assert_eq!(r.width(), 610.0);
+        assert_eq!(l.height(), 800.0);
+        assert_eq!(s.height(), 800.0);
+        assert_eq!(r.height(), 800.0);
+        assert_eq!(l.left(), 0.0);
+        assert_eq!(l.right(), 610.0);
+        assert_eq!(s.left(), 610.0);
+        assert_eq!(s.right(), 670.0);
+        assert_eq!(r.left(), 670.0);
+        assert_eq!(r.right(), 1280.0);
+    }
+
+    #[test]
+    fn pane_rects_no_overlap() {
+        let full = rect(egui::pos2(100.0, 50.0), egui::pos2(900.0, 550.0));
+        let (l, s, r) = pane_rects(full, 40.0);
+        assert!(l.right() <= s.left());
+        assert!(s.right() <= r.left());
+    }
+
+    #[test]
+    fn pane_rects_non_neg_width_when_strip_wider_than_full() {
+        let full = rect(egui::pos2(0.0, 0.0), egui::pos2(50.0, 100.0));
+        let (l, s, r) = pane_rects(full, 80.0);
+        // strip shrinks to full width; panes clamp to zero width but valid rects
+        assert!(l.width() >= 0.0);
+        assert!(r.width() >= 0.0);
+        assert_eq!(s.width(), 50.0);
+        assert_eq!(s.left(), 0.0);
+        assert_eq!(s.right(), 50.0);
+        assert_eq!(l.left(), 0.0);
+        assert_eq!(l.right(), 0.0);
+        assert_eq!(r.left(), 50.0);
+        assert_eq!(r.right(), 50.0);
     }
 }

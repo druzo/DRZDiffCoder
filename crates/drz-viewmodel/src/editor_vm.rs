@@ -1,5 +1,5 @@
 use crate::types::LineSpan;
-use drz_core::{CoreError, Document, TextEdit};
+use drz_core::{CoreError, Document, NewlinePolicy, TextEdit};
 use drz_highlight::{HighlightEdit, HighlightEngine, LanguageId};
 use std::path::Path;
 
@@ -8,6 +8,9 @@ pub struct EditorViewModel {
     engine: Option<HighlightEngine>,
     #[allow(dead_code)]
     lang: LanguageId,
+    /// Mutation counter: bumped by `edit()` only, so readers (e.g. the diff
+    /// view) can tell real edits apart from render-path access.
+    edit_seq: u64,
 }
 
 impl EditorViewModel {
@@ -15,7 +18,12 @@ impl EditorViewModel {
         let doc = Document::open(path)?;
         let lang = LanguageId::from_path(path);
         let engine = HighlightEngine::new(lang).ok().flatten();
-        let mut vm = EditorViewModel { doc, engine, lang };
+        let mut vm = EditorViewModel {
+            doc,
+            engine,
+            lang,
+            edit_seq: 0,
+        };
         vm.reparse_full();
         Ok(vm)
     }
@@ -26,6 +34,7 @@ impl EditorViewModel {
             doc: Document::from_text(text),
             engine,
             lang,
+            edit_seq: 0,
         };
         vm.reparse_full();
         vm
@@ -38,6 +47,7 @@ impl EditorViewModel {
     }
 
     pub fn edit(&mut self, start_byte: usize, old_end_byte: usize, text: &str) {
+        self.edit_seq += 1;
         let hl_edit =
             HighlightEdit::from_rope_edit(self.doc.rope(), start_byte, old_end_byte, text);
         self.doc.apply(&TextEdit {
@@ -104,6 +114,9 @@ impl EditorViewModel {
     pub fn is_dirty(&self) -> bool {
         self.doc.is_dirty()
     }
+    pub fn edit_seq(&self) -> u64 {
+        self.edit_seq
+    }
     pub fn encoding_guessed(&self) -> bool {
         self.doc.encoding_guessed()
     }
@@ -115,28 +128,17 @@ impl EditorViewModel {
         self.doc.save()
     }
 
+    /// Whole-line replacement for merge: newline semantics come from
+    /// `Document::line_replace_edit` (single shared code path in drz-core);
+    /// `Exact` makes the target reproduce the source block byte-for-byte,
+    /// including its trailing-newline state at end of document. The mutation
+    /// still routes through `edit()`, so exactly one HighlightEdit reaches
+    /// the engine.
     pub fn replace_lines(&mut self, start: usize, end: usize, text: &str) {
-        let start_byte = self
+        let edit = self
             .doc
-            .rope()
-            .line_to_byte(start.min(self.doc.len_lines()));
-        let end_byte = if end >= self.doc.len_lines() {
-            self.doc.rope().len_bytes()
-        } else {
-            self.doc.rope().line_to_byte(end)
-        };
-        // Mirror Document::replace_lines: keep line break so following lines
-        // stay intact, while routing through edit() for highlight sync.
-        let mut inserted = text.to_string();
-        if !inserted.ends_with('\n') {
-            let removed_reached_newline = end_byte < self.doc.rope().len_bytes()
-                || (self.doc.rope().len_bytes() > 0
-                    && self.doc.rope().byte(self.doc.rope().len_bytes() - 1) == b'\n');
-            if removed_reached_newline {
-                inserted.push('\n');
-            }
-        }
-        self.edit(start_byte, end_byte, &inserted);
+            .line_replace_edit(start, end, text, NewlinePolicy::Exact);
+        self.edit(edit.start_byte, edit.old_end_byte, &edit.inserted);
     }
 }
 

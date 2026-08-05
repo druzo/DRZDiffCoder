@@ -8,4 +8,4 @@ pub use diff_vm::{DiffViewModel, MergeDirection};
 pub use drz_core::{build_alignment, Alignment, CoreError, Hunk};
 pub use drz_highlight::LanguageId;
 pub use editor_vm::EditorViewModel;
-pub use types::LineSpan;
+pub use types::{LineSpan, LineStatus};

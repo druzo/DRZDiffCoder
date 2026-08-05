@@ -7,6 +7,6 @@ pub mod io;
 
 pub use align::{build_alignment, Alignment};
 pub use diff::{diff_lines, Hunk};
-pub use document::Document;
+pub use document::{Document, NewlinePolicy};
 pub use edit::TextEdit;
 pub use error::CoreError;

@@ -2,6 +2,20 @@ use crate::edit::TextEdit;
 use ropey::Rope;
 use std::path::{Path, PathBuf};
 
+/// Trailing-newline policy for whole-line replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewlinePolicy {
+    /// Keep document structure: a non-empty replacement not ending in '\n'
+    /// gains one when followed by more text or when the removed range ended
+    /// with a line break. An empty replacement stays empty (pure deletion).
+    Preserve,
+    /// Use the replacement verbatim: a non-empty replacement not ending in
+    /// '\n' gains one only when followed by more text. At end of document
+    /// the caller's trailing-newline state is reproduced exactly (merge uses
+    /// this to mirror the source block byte-for-byte).
+    Exact,
+}
+
 pub struct Document {
     rope: Rope,
     path: Option<PathBuf>,
@@ -84,29 +98,50 @@ impl Document {
         (start, start + len)
     }
 
-    pub fn replace_lines(&mut self, start: usize, end: usize, text: &str) {
-        let start_byte = self.rope.line_to_byte(start);
-        let end_byte = if end >= self.rope.len_lines() {
+    /// Compute the `TextEdit` for replacing whole lines `start..end` with
+    /// `text`, owning the newline semantics shared by all callers: the byte
+    /// range covers the lines including their terminators, and `policy`
+    /// decides whether a trailing '\n' is appended to a non-empty
+    /// replacement. An empty replacement is always inserted verbatim, so a
+    /// pure deletion never leaves a blank line behind.
+    pub fn line_replace_edit(
+        &self,
+        start: usize,
+        end: usize,
+        text: &str,
+        policy: NewlinePolicy,
+    ) -> TextEdit {
+        let len = self.rope.len_lines();
+        let start_byte = self.rope.line_to_byte(start.min(len));
+        let end_byte = if end >= len {
             self.rope.len_bytes()
         } else {
             self.rope.line_to_byte(end)
         };
         let mut inserted = text.to_string();
-        // Replacing whole lines: keep the line break so following lines stay
-        // intact, and preserve a trailing newline at end of document.
-        if !inserted.ends_with('\n') {
-            let removed_reached_newline = end_byte < self.rope.len_bytes()
-                || (self.rope.len_bytes() > 0
-                    && self.rope.byte(self.rope.len_bytes() - 1) == b'\n');
-            if removed_reached_newline {
+        if !inserted.is_empty() && !inserted.ends_with('\n') {
+            let append = match policy {
+                NewlinePolicy::Exact => end_byte < self.rope.len_bytes(),
+                NewlinePolicy::Preserve => {
+                    end_byte < self.rope.len_bytes()
+                        || (self.rope.len_bytes() > 0
+                            && self.rope.byte(self.rope.len_bytes() - 1) == b'\n')
+                }
+            };
+            if append {
                 inserted.push('\n');
             }
         }
-        self.apply(&TextEdit {
+        TextEdit {
             start_byte,
             old_end_byte: end_byte,
             inserted,
-        });
+        }
+    }
+
+    pub fn replace_lines(&mut self, start: usize, end: usize, text: &str) {
+        let edit = self.line_replace_edit(start, end, text, NewlinePolicy::Preserve);
+        self.apply(&edit);
     }
 
     pub fn rope(&self) -> &Rope {
@@ -162,5 +197,35 @@ mod tests {
         let mut doc = Document::from_text("a\nb\nc\n");
         doc.replace_lines(1, 2, "X\nY");
         assert_eq!(doc.to_string(), "a\nX\nY\nc\n");
+    }
+
+    #[test]
+    fn replace_lines_empty_deletes_without_blank_line() {
+        let mut doc = Document::from_text("a\nb\nc\n");
+        doc.replace_lines(1, 2, "");
+        assert_eq!(doc.to_string(), "a\nc\n");
+    }
+
+    #[test]
+    fn replace_lines_empty_at_eof_deletes_without_blank_line() {
+        let mut doc = Document::from_text("a\nb\n");
+        doc.replace_lines(1, 2, "");
+        assert_eq!(doc.to_string(), "a\n");
+    }
+
+    #[test]
+    fn line_replace_edit_exact_is_verbatim_at_eof() {
+        let doc = Document::from_text("a\nb\n");
+        let e = doc.line_replace_edit(1, 2, "b", NewlinePolicy::Exact);
+        assert_eq!(e.inserted, "b");
+        let e = doc.line_replace_edit(1, 2, "b", NewlinePolicy::Preserve);
+        assert_eq!(e.inserted, "b\n");
+    }
+
+    #[test]
+    fn line_replace_edit_exact_separates_from_following_lines() {
+        let doc = Document::from_text("a\nb\nc\n");
+        let e = doc.line_replace_edit(1, 2, "X", NewlinePolicy::Exact);
+        assert_eq!(e.inserted, "X\n");
     }
 }

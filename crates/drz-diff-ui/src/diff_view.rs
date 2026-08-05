@@ -1,5 +1,5 @@
-use drz_editor::CodeEditor;
-use drz_viewmodel::{Alignment, DiffViewModel, Hunk, MergeDirection};
+use drz_editor::{CodeEditor, RowBg, RowDecor};
+use drz_viewmodel::{Alignment, DiffViewModel, Hunk, LineStatus, MergeDirection};
 
 const STRIP_WIDTH: f32 = 60.0;
 
@@ -9,6 +9,8 @@ pub struct DiffView {
     left_editor: CodeEditor,
     right_editor: CodeEditor,
     scroll: egui::Vec2,
+    left_decors: Vec<RowDecor>,
+    right_decors: Vec<RowDecor>,
 }
 
 impl DiffView {
@@ -17,6 +19,8 @@ impl DiffView {
             left_editor: CodeEditor::new(),
             right_editor: CodeEditor::new(),
             scroll: egui::Vec2::ZERO,
+            left_decors: Vec::new(),
+            right_decors: Vec::new(),
         }
     }
 
@@ -39,6 +43,17 @@ impl DiffView {
         let scroll_y = self.scroll.y;
         paint_strip(ui, strip_rect, &alignment, &hunks, row_height, scroll_y, vm);
 
+        // Build per-display-row decoration for each pane.
+        build_decors(
+            &alignment,
+            vm.line_status_left(),
+            vm.line_status_right(),
+            vm.inline_left(),
+            vm.inline_right(),
+            &mut self.left_decors,
+            &mut self.right_decors,
+        );
+
         let mut left_ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(left_rect)
@@ -50,6 +65,7 @@ impl DiffView {
             &alignment.left,
             total_rows,
             &mut self.scroll,
+            Some(&self.left_decors),
         );
 
         let mut right_ui = ui.new_child(
@@ -63,7 +79,66 @@ impl DiffView {
             &alignment.right,
             total_rows,
             &mut self.scroll,
+            Some(&self.right_decors),
         );
+    }
+}
+
+/// Map per-line status to a side-appropriate row background.
+/// Left pane: Removed → Some(Removed), anything else → None.
+/// Right pane: Added → Some(Added), anything else → None.
+fn status_to_bg(st: LineStatus, side_is_left: bool) -> Option<RowBg> {
+    match (st, side_is_left) {
+        (LineStatus::Removed, true) => Some(RowBg::Removed),
+        (LineStatus::Added, false) => Some(RowBg::Added),
+        _ => None,
+    }
+}
+
+/// Build display-row-indexed decoration vectors from alignment and per-side
+/// line status / inline marks. Padding rows (`None` in alignment) get default
+/// decoration (no bg, no inline).
+fn build_decors(
+    alignment: &Alignment,
+    status_left: &[LineStatus],
+    status_right: &[LineStatus],
+    inline_left: &[Option<Vec<(usize, usize)>>],
+    inline_right: &[Option<Vec<(usize, usize)>>],
+    out_left: &mut Vec<RowDecor>,
+    out_right: &mut Vec<RowDecor>,
+) {
+    out_left.clear();
+    out_right.clear();
+    let n = alignment.left.len().min(alignment.right.len());
+    for row in 0..n {
+        let l = alignment.left[row];
+        let r = alignment.right[row];
+        out_left.push(match l {
+            Some(idx) => RowDecor {
+                bg: status_left
+                    .get(idx)
+                    .copied()
+                    .and_then(|s| status_to_bg(s, true)),
+                inline: inline_left
+                    .get(idx)
+                    .and_then(|x| x.clone())
+                    .unwrap_or_default(),
+            },
+            None => RowDecor::default(),
+        });
+        out_right.push(match r {
+            Some(idx) => RowDecor {
+                bg: status_right
+                    .get(idx)
+                    .copied()
+                    .and_then(|s| status_to_bg(s, false)),
+                inline: inline_right
+                    .get(idx)
+                    .and_then(|x| x.clone())
+                    .unwrap_or_default(),
+            },
+            None => RowDecor::default(),
+        });
     }
 }
 
@@ -263,5 +338,87 @@ mod tests {
         assert_eq!(l.right(), 0.0);
         assert_eq!(r.left(), 50.0);
         assert_eq!(r.right(), 50.0);
+    }
+
+    fn dec_line(
+        left: &[LineStatus],
+        right: &[LineStatus],
+        inline_l: &[Option<Vec<(usize, usize)>>],
+        inline_r: &[Option<Vec<(usize, usize)>>],
+        align: (Vec<Option<usize>>, Vec<Option<usize>>),
+    ) -> (Vec<RowDecor>, Vec<RowDecor>) {
+        let (al, ar) = align;
+        let mut lo = Vec::new();
+        let mut ro = Vec::new();
+        build_decors(
+            &Alignment {
+                left: al,
+                right: ar,
+            },
+            left,
+            right,
+            inline_l,
+            inline_r,
+            &mut lo,
+            &mut ro,
+        );
+        (lo, ro)
+    }
+
+    #[test]
+    fn status_to_bg_per_side() {
+        assert_eq!(
+            status_to_bg(LineStatus::Removed, true),
+            Some(RowBg::Removed)
+        );
+        assert_eq!(
+            status_to_bg(LineStatus::Added, true),
+            None,
+            "left pane ignores Added"
+        );
+        assert_eq!(status_to_bg(LineStatus::Added, false), Some(RowBg::Added));
+        assert_eq!(
+            status_to_bg(LineStatus::Removed, false),
+            None,
+            "right pane ignores Removed"
+        );
+        assert_eq!(status_to_bg(LineStatus::Unchanged, true), None);
+        assert_eq!(status_to_bg(LineStatus::Unchanged, false), None);
+    }
+
+    #[test]
+    fn build_decors_passes_inline_through() {
+        // alignment row 0 → left line 0, right line 1
+        let left = vec![LineStatus::Unchanged, LineStatus::Removed];
+        let right = vec![LineStatus::Added, LineStatus::Unchanged];
+        let il = vec![None, Some(vec![(2, 4)])];
+        let ir = vec![Some(vec![(0, 1)]), None];
+        let (lo, ro) = dec_line(
+            &left,
+            &right,
+            &il,
+            &ir,
+            (vec![Some(0), Some(1)], vec![Some(1), Some(0)]),
+        );
+        // row 0: left[0]=Unchanged→no bg; right[1]=Unchanged→no bg; inline il[0]=None, ir[1]=None
+        assert!(lo[0].bg.is_none() && ro[0].bg.is_none());
+        assert!(lo[0].inline.is_empty() && ro[0].inline.is_empty());
+        // row 1: left[1]=Removed→Some(Removed) + inline [(2,4)]; right[0]=Added→Some(Added) + inline [(0,1)]
+        assert_eq!(lo[1].bg, Some(RowBg::Removed));
+        assert_eq!(ro[1].bg, Some(RowBg::Added));
+        assert_eq!(lo[1].inline, vec![(2, 4)]);
+        assert_eq!(ro[1].inline, vec![(0, 1)]);
+    }
+
+    #[test]
+    fn build_decors_padding_row_default() {
+        // alignment: left None, right Some(0)
+        let left = vec![LineStatus::Removed];
+        let right = vec![LineStatus::Unchanged];
+        let il = vec![Some(vec![(1, 2)])];
+        let ir = vec![None];
+        let (lo, ro) = dec_line(&left, &right, &il, &ir, (vec![None], vec![Some(0)]));
+        assert!(lo[0].bg.is_none() && lo[0].inline.is_empty());
+        assert!(ro[0].bg.is_none() && ro[0].inline.is_empty());
     }
 }

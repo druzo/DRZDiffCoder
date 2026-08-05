@@ -1,8 +1,11 @@
 use similar::{DiffTag, TextDiff};
 
+/// Per-side changed char ranges (col-aligned in monospace font).
+pub type CharRanges = Vec<(usize, usize)>;
+
 /// Per-side char-index ranges of differing characters.
 /// Indices are char positions (column-aligned in monospace font).
-pub fn inline_diff_ranges(old: &str, new: &str) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+pub fn inline_diff_ranges(old: &str, new: &str) -> (CharRanges, CharRanges) {
     let diff = TextDiff::from_chars(old, new);
     let mut left = Vec::new();
     let mut right = Vec::new();

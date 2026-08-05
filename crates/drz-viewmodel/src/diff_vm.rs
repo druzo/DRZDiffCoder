@@ -5,6 +5,16 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Per-line change decoration derived from line hunks. Document-line indexed
+/// (`text.lines().count()` length, matching `diff_lines` semantics).
+#[derive(Debug, Default, Clone)]
+pub struct LineDecor {
+    pub status_left: Vec<LineStatus>,
+    pub status_right: Vec<LineStatus>,
+    pub inline_left: Vec<Option<Vec<(usize, usize)>>>,
+    pub inline_right: Vec<Option<Vec<(usize, usize)>>>,
+}
+
 const DEBOUNCE: Duration = Duration::from_millis(150);
 /// Per-pair line count above which inline char-diff is skipped (line bg still
 /// applied). Keeps large hunk recomputation cheap.
@@ -21,13 +31,8 @@ pub struct DiffViewModel {
     right: EditorViewModel,
     hunks: Vec<Hunk>,
     alignment: Alignment,
-    /// Per-line change status, document-line indexed.
-    status_left: Vec<LineStatus>,
-    status_right: Vec<LineStatus>,
-    /// Per-line char-level changed ranges, document-line indexed; `None` for
-    /// unchanged lines or hunks skipped by the inline cap.
-    inline_left: Vec<Option<Vec<(usize, usize)>>>,
-    inline_right: Vec<Option<Vec<(usize, usize)>>>,
+    /// Per-line change decoration, document-line indexed.
+    line_decor: LineDecor,
     /// Set when a real edit is observed; the diff spawns once it has been
     /// stable for DEBOUNCE (burst debounce while typing).
     dirty_since: Option<Instant>,
@@ -42,10 +47,7 @@ pub struct DiffViewModel {
 struct DiffResult {
     hunks: Vec<Hunk>,
     alignment: Alignment,
-    status_left: Vec<LineStatus>,
-    status_right: Vec<LineStatus>,
-    inline_left: Vec<Option<Vec<(usize, usize)>>>,
-    inline_right: Vec<Option<Vec<(usize, usize)>>>,
+    decor: LineDecor,
 }
 
 impl DiffViewModel {
@@ -59,10 +61,7 @@ impl DiffViewModel {
                 left: Vec::new(),
                 right: Vec::new(),
             },
-            status_left: Vec::new(),
-            status_right: Vec::new(),
-            inline_left: Vec::new(),
-            inline_right: Vec::new(),
+            line_decor: LineDecor::default(),
             // prime one initial diff on the first poll
             dirty_since: Some(Instant::now() - DEBOUNCE),
             last_diffed,
@@ -102,10 +101,7 @@ impl DiffViewModel {
                 Ok(result) => {
                     self.hunks = result.hunks;
                     self.alignment = result.alignment;
-                    self.status_left = result.status_left;
-                    self.status_right = result.status_right;
-                    self.inline_left = result.inline_left;
-                    self.inline_right = result.inline_right;
+                    self.line_decor = result.decor;
                     self.in_flight = false;
                     self.rx = None;
                     updated = true;
@@ -143,15 +139,11 @@ impl DiffViewModel {
         std::thread::spawn(move || {
             let hunks = diff_lines(&old, &new);
             let alignment = build_alignment(&hunks, content_lines(&old), content_lines(&new));
-            let (status_left, status_right, inline_left, inline_right) =
-                build_line_status(&old, &new, &hunks);
+            let decor = build_line_status(&old, &new, &hunks);
             let _ = tx.send(DiffResult {
                 hunks,
                 alignment,
-                status_left,
-                status_right,
-                inline_left,
-                inline_right,
+                decor,
             });
         });
         self.rx = Some(rx);
@@ -167,12 +159,7 @@ impl DiffViewModel {
         let new = self.right.document_text();
         self.hunks = diff_lines(&old, &new);
         self.alignment = build_alignment(&self.hunks, content_lines(&old), content_lines(&new));
-        let (status_left, status_right, inline_left, inline_right) =
-            build_line_status(&old, &new, &self.hunks);
-        self.status_left = status_left;
-        self.status_right = status_right;
-        self.inline_left = inline_left;
-        self.inline_right = inline_right;
+        self.line_decor = build_line_status(&old, &new, &self.hunks);
     }
 
     pub fn hunks(&self) -> &[Hunk] {
@@ -182,16 +169,16 @@ impl DiffViewModel {
         &self.alignment
     }
     pub fn line_status_left(&self) -> &[LineStatus] {
-        &self.status_left
+        &self.line_decor.status_left
     }
     pub fn line_status_right(&self) -> &[LineStatus] {
-        &self.status_right
+        &self.line_decor.status_right
     }
     pub fn inline_left(&self) -> &[Option<Vec<(usize, usize)>>] {
-        &self.inline_left
+        &self.line_decor.inline_left
     }
     pub fn inline_right(&self) -> &[Option<Vec<(usize, usize)>>] {
-        &self.inline_right
+        &self.line_decor.inline_right
     }
 
     /// Test probe: a recompute is scheduled or running.
@@ -233,16 +220,7 @@ fn content_lines(text: &str) -> usize {
 ///
 /// Pure insertions (`old_start == old_end`) and deletions (`new_start ==
 /// new_end`) carry no paired lines → no inline marks on the receiving side.
-fn build_line_status(
-    old: &str,
-    new: &str,
-    hunks: &[Hunk],
-) -> (
-    Vec<LineStatus>,
-    Vec<LineStatus>,
-    Vec<Option<Vec<(usize, usize)>>>,
-    Vec<Option<Vec<(usize, usize)>>>,
-) {
+fn build_line_status(old: &str, new: &str, hunks: &[Hunk]) -> LineDecor {
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
     let mut status_left = vec![LineStatus::Unchanged; old_lines.len()];
@@ -280,7 +258,12 @@ fn build_line_status(
             inline_right[ln] = Some(r);
         }
     }
-    (status_left, status_right, inline_left, inline_right)
+    LineDecor {
+        status_left,
+        status_right,
+        inline_left,
+        inline_right,
+    }
 }
 
 fn build_block(vm: &EditorViewModel, start: usize, end: usize) -> String {
@@ -497,8 +480,10 @@ mod tests {
         // paired: 1 pair → inline present on both sides
         let l1 = inlines(&vm, Side::Left).get(1).unwrap();
         let r1 = inlines(&vm, Side::Right).get(1).unwrap();
-        assert!(l1.is_some() && !l1.as_ref().unwrap().is_empty(),
-            "left line 1 should have inline char ranges (b vs X differ)");
+        assert!(
+            l1.is_some() && !l1.as_ref().unwrap().is_empty(),
+            "left line 1 should have inline char ranges (b vs X differ)"
+        );
         assert!(r1.is_some());
     }
 
@@ -548,11 +533,17 @@ mod tests {
         let h = &vm.hunks()[0];
         assert_eq!((h.old_end - h.old_start) + (h.new_end - h.new_start), 500);
         // backgrounds still applied
-        assert!(statuses(&vm, Side::Left).iter().any(|s| *s == Removed));
-        assert!(statuses(&vm, Side::Right).iter().any(|s| *s == Added));
+        assert!(statuses(&vm, Side::Left).contains(&Removed));
+        assert!(statuses(&vm, Side::Right).contains(&Added));
         // but inline marks skipped due to cap
-        for line in inlines(&vm, Side::Left).iter().chain(inlines(&vm, Side::Right)) {
-            assert!(line.is_none(), "inline must be skipped when hunk exceeds cap");
+        for line in inlines(&vm, Side::Left)
+            .iter()
+            .chain(inlines(&vm, Side::Right))
+        {
+            assert!(
+                line.is_none(),
+                "inline must be skipped when hunk exceeds cap"
+            );
         }
     }
 

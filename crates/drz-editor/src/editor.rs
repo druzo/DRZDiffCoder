@@ -1,5 +1,22 @@
-use crate::theme::style_color;
+use crate::theme::{inline_bg, line_bg, style_color};
 use drz_viewmodel::{EditorViewModel, LineSpan};
+
+/// Whole-row background tint category for a diff line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowBg {
+    Added,
+    Removed,
+}
+
+/// Per-display-row decoration: optional full-row background and intra-line
+/// char-range emphasis. Built by the diff view from per-line status and
+/// inline marks; passed to the editor via `show_rows`.
+#[derive(Debug, Clone, Default)]
+pub struct RowDecor {
+    pub bg: Option<RowBg>,
+    /// Char-index ranges (col-aligned in monospace) to emphasize within the row.
+    pub inline: Vec<(usize, usize)>,
+}
 
 pub struct CodeEditor {
     cursor: (usize, usize), // (line, col_byte)
@@ -21,12 +38,14 @@ impl CodeEditor {
         line_of_row: Option<&dyn Fn(usize) -> Option<usize>>,
         total_rows: usize,
         scroll: &mut egui::Vec2,
+        row_decor: Option<&dyn Fn(usize) -> Option<RowDecor>>,
     ) {
         let font_id = egui::FontId::monospace(14.0);
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
         let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
         let dark = ui.visuals().dark_mode;
         let gutter_width = 48.0;
+        let pane_width = ui.available_width();
 
         let rows = if line_of_row.is_some() {
             total_rows
@@ -73,6 +92,37 @@ impl CodeEditor {
 
                 let focused = response.has_focus();
                 let painter = ui.painter_at(rect);
+                // Paint row backgrounds + inline emphasis first, then text on top.
+                for row in first_row..last_row {
+                    let y = rect.top() + row as f32 * row_height;
+                    if let Some(decor) = row_decor.and_then(|f| f(row)) {
+                        if let Some(bg) = decor.bg {
+                            painter.rect_filled(
+                                egui::Rect::from_min_max(
+                                    egui::pos2(rect.left(), y),
+                                    egui::pos2(rect.left() + pane_width, y + row_height),
+                                ),
+                                0.0,
+                                line_bg(bg, dark),
+                            );
+                            for &(s, e) in &decor.inline {
+                                if s >= e {
+                                    continue;
+                                }
+                                let (rx, rw) =
+                                    inline_rect_x(s, e, rect.left() + gutter_width, char_width);
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(rx, y),
+                                        egui::vec2(rw, row_height),
+                                    ),
+                                    0.0,
+                                    inline_bg(bg, dark),
+                                );
+                            }
+                        }
+                    }
+                }
                 for row in first_row..last_row {
                     let y = rect.top() + row as f32 * row_height;
                     let line_opt = match line_of_row {
@@ -122,13 +172,20 @@ impl CodeEditor {
         row_map: &[Option<usize>],
         total_rows: usize,
         scroll: &mut egui::Vec2,
+        decors: Option<&[RowDecor]>,
     ) {
+        let decors_vec: Option<Vec<RowDecor>> = decors.map(|d| d.to_vec());
+        let decor_fn: Option<Box<dyn Fn(usize) -> Option<RowDecor>>> = decors_vec.map(|d| {
+            Box::new(move |row: usize| -> Option<RowDecor> { d.get(row).cloned() })
+                as Box<dyn Fn(usize) -> Option<RowDecor>>
+        });
         self.show(
             ui,
             vm,
-            Some(&move |row| row_map.get(row).copied().flatten()),
+            Some(&|row| row_map.get(row).copied().flatten()),
             total_rows,
             scroll,
+            decor_fn.as_deref(),
         );
     }
 
@@ -237,6 +294,19 @@ pub(crate) fn x_to_col(x: f32, char_width: f32) -> usize {
     (x / char_width).round().max(0.0) as usize
 }
 
+/// Pixel rectangle for an inline char range within a row.
+/// Returns `(x, width)` relative to the pane's text area (after the gutter).
+pub(crate) fn inline_rect_x(
+    start_col: usize,
+    end_col: usize,
+    gutter_right_x: f32,
+    char_width: f32,
+) -> (f32, f32) {
+    let x = gutter_right_x + start_col as f32 * char_width;
+    let w = (end_col as f32 - start_col as f32) * char_width;
+    (x, w)
+}
+
 /// Floor a byte col to the nearest char boundary (col semantics stay byte offsets).
 /// Cursor col can land mid-char because arrows move bytewise; slicing/inserting
 /// at a non-boundary byte would panic.
@@ -309,6 +379,14 @@ mod tests {
         assert_eq!(x_to_col(3.9, 8.0), 0);
         assert_eq!(x_to_col(4.1, 8.0), 1);
         assert_eq!(x_to_col(80.0, 8.0), 10);
+    }
+
+    #[test]
+    fn inline_rect_x_math() {
+        // gutter at 48, char_w 8
+        assert_eq!(inline_rect_x(3, 7, 48.0, 8.0), (72.0, 32.0));
+        assert_eq!(inline_rect_x(0, 5, 48.0, 8.0), (48.0, 40.0));
+        assert_eq!(inline_rect_x(0, 0, 48.0, 8.0), (48.0, 0.0));
     }
 
     #[test]

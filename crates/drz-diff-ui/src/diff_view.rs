@@ -3,6 +3,11 @@ use drz_viewmodel::{Alignment, DiffViewModel, Hunk, LineStatus, MergeDirection};
 
 const STRIP_WIDTH: f32 = 60.0;
 
+/// Merge-button icons embedded at compile time so the binary is self-contained
+/// and works regardless of CWD / install layout.
+const ARROW_RIGHT_PNG: &[u8] = include_bytes!("../../../icons/arrow.right.png");
+const ARROW_LEFT_PNG: &[u8] = include_bytes!("../../../icons/arrow.left.png");
+
 /// Side-by-side synced diff view: two `CodeEditor` panes sharing one vertical
 /// scroll offset, with a center strip showing per-hunk bands and merge arrows.
 pub struct DiffView {
@@ -11,6 +16,8 @@ pub struct DiffView {
     scroll: egui::Vec2,
     left_decors: Vec<RowDecor>,
     right_decors: Vec<RowDecor>,
+    arrow_right: Option<egui::TextureHandle>,
+    arrow_left: Option<egui::TextureHandle>,
 }
 
 impl DiffView {
@@ -21,11 +28,25 @@ impl DiffView {
             scroll: egui::Vec2::ZERO,
             left_decors: Vec::new(),
             right_decors: Vec::new(),
+            arrow_right: None,
+            arrow_left: None,
+        }
+    }
+
+    /// Lazily decode the embedded PNGs into GPU textures on the first show().
+    /// Errors fall back to the text glyph buttons (graceful degrade).
+    fn ensure_textures(&mut self, ctx: &egui::Context) {
+        if self.arrow_right.is_none() {
+            self.arrow_right = load_png_texture(ctx, "drz_arrow_right", ARROW_RIGHT_PNG);
+        }
+        if self.arrow_left.is_none() {
+            self.arrow_left = load_png_texture(ctx, "drz_arrow_left", ARROW_LEFT_PNG);
         }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, vm: &mut DiffViewModel) {
         vm.poll();
+        self.ensure_textures(ui.ctx());
         let alignment = vm.alignment().clone();
         let hunks = vm.hunks().to_vec();
         let total_rows = alignment.left.len();
@@ -41,7 +62,7 @@ impl DiffView {
         ui.allocate_rect(right_rect, egui::Sense::hover());
 
         let scroll_y = self.scroll.y;
-        paint_strip(ui, strip_rect, &alignment, &hunks, row_height, scroll_y, vm);
+        self.paint_strip(ui, strip_rect, &alignment, &hunks, row_height, scroll_y, vm);
 
         // Build per-display-row decoration for each pane.
         build_decors(
@@ -82,6 +103,15 @@ impl DiffView {
             Some(&self.right_decors),
         );
     }
+}
+
+/// Decode PNG bytes into an egui texture. Returns `None` on decode error so
+/// callers can fall back gracefully.
+fn load_png_texture(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Option<egui::TextureHandle> {
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let color = egui::ColorImage::from_rgba_unmultiplied([w, h], img.as_raw());
+    Some(ctx.load_texture(name, color, egui::TextureOptions::LINEAR))
 }
 
 /// Map per-line status to a side-appropriate row background.
@@ -169,63 +199,83 @@ impl Default for DiffView {
 /// Paint hunk bands + merge arrow buttons in the center strip.
 /// Click intents are collected and applied after painting so no `vm` borrow
 /// is held across egui closures.
-fn paint_strip(
-    ui: &mut egui::Ui,
-    strip_rect: egui::Rect,
-    alignment: &Alignment,
-    hunks: &[Hunk],
-    row_height: f32,
-    scroll_y: f32,
-    vm: &mut DiffViewModel,
-) {
-    let mut intents: Vec<(usize, MergeDirection)> = Vec::new();
-    let painter = ui.painter_at(strip_rect);
+impl DiffView {
+    #[allow(clippy::too_many_arguments)]
+    fn paint_strip(
+        &self,
+        ui: &mut egui::Ui,
+        strip_rect: egui::Rect,
+        alignment: &Alignment,
+        hunks: &[Hunk],
+        row_height: f32,
+        scroll_y: f32,
+        vm: &mut DiffViewModel,
+    ) {
+        let mut intents: Vec<(usize, MergeDirection)> = Vec::new();
+        let painter = ui.painter_at(strip_rect);
 
-    for (idx, hunk) in hunks.iter().enumerate() {
-        let span = hunk_row_span(alignment, hunk);
-        if span.start >= span.end {
-            continue;
-        }
-        let y0 = strip_rect.top() + span.start as f32 * row_height - scroll_y;
-        let y1 = strip_rect.top() + span.end as f32 * row_height - scroll_y;
-        if y1 < strip_rect.top() || y0 > strip_rect.bottom() {
-            continue; // band scrolled out of view
-        }
-        let band = egui::Rect::from_min_max(
-            egui::pos2(strip_rect.left(), y0),
-            egui::pos2(strip_rect.right(), y1),
-        );
-        painter.rect_filled(
-            band,
-            2.0,
-            egui::Color32::from_rgba_unmultiplied(255, 196, 0, 40),
-        );
+        for (idx, hunk) in hunks.iter().enumerate() {
+            let span = hunk_row_span(alignment, hunk);
+            if span.start >= span.end {
+                continue;
+            }
+            let y0 = strip_rect.top() + span.start as f32 * row_height - scroll_y;
+            let y1 = strip_rect.top() + span.end as f32 * row_height - scroll_y;
+            if y1 < strip_rect.top() || y0 > strip_rect.bottom() {
+                continue; // band scrolled out of view
+            }
+            let band = egui::Rect::from_min_max(
+                egui::pos2(strip_rect.left(), y0),
+                egui::pos2(strip_rect.right(), y1),
+            );
+            painter.rect_filled(
+                band,
+                2.0,
+                egui::Color32::from_rgba_unmultiplied(255, 196, 0, 40),
+            );
 
-        // merge buttons centered in the band (clamped into the strip)
-        let mid_y = ((y0 + y1) / 2.0).clamp(strip_rect.top() + 8.0, strip_rect.bottom() - 8.0);
-        let btn = egui::vec2(26.0, 16.0);
-        let to_right =
-            egui::Rect::from_center_size(egui::pos2(strip_rect.left() + 14.0, mid_y), btn);
-        let to_left =
-            egui::Rect::from_center_size(egui::pos2(strip_rect.right() - 14.0, mid_y), btn);
-        if ui
-            .put(to_right, egui::Button::new("\u{2192}").small())
-            .on_hover_text("Apply left \u{2192} right")
-            .clicked()
-        {
-            intents.push((idx, MergeDirection::LeftToRight));
+            // merge buttons centered in the band (clamped into the strip)
+            let mid_y = ((y0 + y1) / 2.0).clamp(strip_rect.top() + 8.0, strip_rect.bottom() - 8.0);
+            let btn = egui::vec2(26.0, 16.0);
+            let to_right =
+                egui::Rect::from_center_size(egui::pos2(strip_rect.left() + 14.0, mid_y), btn);
+            let to_left =
+                egui::Rect::from_center_size(egui::pos2(strip_rect.right() - 14.0, mid_y), btn);
+
+            if ui
+                .put(to_right, self.make_arrow_button(true))
+                .on_hover_text("Apply left \u{2192} right")
+                .clicked()
+            {
+                intents.push((idx, MergeDirection::LeftToRight));
+            }
+            if ui
+                .put(to_left, self.make_arrow_button(false))
+                .on_hover_text("Apply right \u{2192} left")
+                .clicked()
+            {
+                intents.push((idx, MergeDirection::RightToLeft));
+            }
         }
-        if ui
-            .put(to_left, egui::Button::new("\u{2190}").small())
-            .on_hover_text("Apply right \u{2192} left")
-            .clicked()
-        {
-            intents.push((idx, MergeDirection::RightToLeft));
+
+        for (idx, dir) in intents {
+            vm.merge_chunk(idx, dir);
         }
     }
 
-    for (idx, dir) in intents {
-        vm.merge_chunk(idx, dir);
+    /// Build a merge-arrow button using the embedded PNG icon (26x22 source
+    /// rendered at 13x11 to fit the 26x16 button rect), falling back to the
+    /// text arrow glyph if texture decoding failed.
+    fn make_arrow_button(&self, right: bool) -> egui::Button<'static> {
+        let tex = if right {
+            self.arrow_right.as_ref()
+        } else {
+            self.arrow_left.as_ref()
+        };
+        match tex {
+            Some(t) => egui::Button::image((t.id(), egui::vec2(13.0, 11.0))).small(),
+            None => egui::Button::new(if right { "\u{2192}" } else { "\u{2190}" }).small(),
+        }
     }
 }
 

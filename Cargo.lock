@@ -1026,6 +1026,7 @@ dependencies = [
  "drz-editor",
  "drz-viewmodel",
  "egui",
+ "image",
 ]
 
 [[package]]

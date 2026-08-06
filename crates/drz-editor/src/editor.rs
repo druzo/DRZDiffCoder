@@ -33,6 +33,10 @@ pub struct CodeEditor {
     /// the source for its Paste action. Populated whenever the user pastes
     /// while focus is in this editor; cleared when the menu consumes it.
     paste_text: Option<String>,
+    /// Whether this editor's response held keyboard focus during the most
+    /// recent `show()` call. Cached so the top-level Edit menu can route
+    /// its actions to the focused pane without re-running the layout.
+    focused: bool,
     icons: EditorIcons,
 }
 
@@ -44,6 +48,7 @@ impl CodeEditor {
             drag_anchor: None,
             last_double_click: None,
             paste_text: None,
+            focused: false,
             icons: EditorIcons::new(),
         }
     }
@@ -52,12 +57,61 @@ impl CodeEditor {
         self.cursor
     }
 
+    /// Whether the editor currently owns keyboard focus. Updated by
+    /// `show()` each frame.
+    pub fn has_focus(&self) -> bool {
+        self.focused
+    }
+
+    /// Pop the most recent edit. Restores `vm` to the previous state and
+    /// moves the caret back to where the user was before the edit.
+    /// No-op if the VM's undo stack is empty.
+    pub fn undo(&mut self, vm: &mut EditorViewModel) {
+        let current = self.cursor;
+        if let Some(caret) = vm.undo(Some(current)) {
+            self.cursor = caret;
+            self.selection = None;
+        }
+    }
+
+    /// Replay the most recently undone edit. No-op if the VM's redo stack
+    /// is empty. The caret lands at the post-edit position the user last
+    /// saw (tracked by the VM via the caret the editor passed to undo).
+    pub fn redo(&mut self, vm: &mut EditorViewModel) {
+        let current = self.cursor;
+        if let Some(caret) = vm.redo(Some(current)) {
+            self.cursor = caret;
+        } else {
+            // VM has no caret to restore (entry from a caret-less edit).
+            // Clamp cursor to a valid position in the (possibly shortened)
+            // document.
+            if self.cursor.0 >= vm.len_lines() {
+                self.cursor.0 = vm.len_lines().saturating_sub(1);
+                self.cursor.1 = 0;
+            } else {
+                self.cursor.1 = self.cursor.1.min(vm.line(self.cursor.0).len());
+            }
+        }
+        self.selection = None;
+    }
+
     pub fn selection(&self) -> Option<&drz_viewmodel::Selection> {
         self.selection.as_ref()
     }
 
     pub fn set_selection(&mut self, sel: Option<drz_viewmodel::Selection>) {
         self.selection = sel;
+    }
+
+    pub fn set_cursor(&mut self, cursor: (usize, usize)) {
+        self.cursor = cursor;
+    }
+
+    /// Take the most recently captured OS paste text. The editor stores it
+    /// from `egui::Event::Paste` (egui 0.31 has no synchronous clipboard
+    /// read API). Returns `None` if nothing was pasted yet.
+    pub fn take_paste_text(&mut self) -> Option<String> {
+        self.paste_text.take()
     }
 
     pub fn show(
@@ -213,6 +267,25 @@ impl CodeEditor {
                 let has_sel = self.selection.is_some_and(|s| s.is_selected());
                 let clipboard_has_text = self.paste_text.is_some();
                 response.context_menu(|ui| {
+                    let undo_label = if let Some(t) = self.icons.undo() {
+                        egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Undo")
+                    } else {
+                        egui::Button::new("Undo")
+                    };
+                    let redo_label = if let Some(t) = self.icons.redo() {
+                        egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Redo")
+                    } else {
+                        egui::Button::new("Redo")
+                    };
+                    if ui.add_enabled(vm.can_undo(), undo_label).clicked() {
+                        self.undo(vm);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(vm.can_redo(), redo_label).clicked() {
+                        self.redo(vm);
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     let copy_label = if let Some(t) = self.icons.copy() {
                         egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Copy")
                     } else {
@@ -266,7 +339,12 @@ impl CodeEditor {
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Select All").clicked() {
+                    let select_all_label = if let Some(t) = self.icons.select_all() {
+                        egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Select All")
+                    } else {
+                        egui::Button::new("Select All")
+                    };
+                    if ui.add(select_all_label).clicked() {
                         let last = vm.len_lines().saturating_sub(1);
                         let last_len = if last < vm.len_lines() {
                             vm.line(last).len()
@@ -281,6 +359,9 @@ impl CodeEditor {
                 });
 
                 let focused = response.has_focus();
+                // Cache focus state for the top-level Edit menu to route
+                // undo/redo/cut/copy/paste/select-all to the right pane.
+                self.focused = focused;
                 let painter = ui.painter_at(rect);
                 // Gutter background (subtle, separates from the code area).
                 let gutter_bg = if dark {
@@ -461,12 +542,20 @@ impl CodeEditor {
         let mut copy_request: Option<String> = None;
         let mut cut_request: Option<((usize, usize), (usize, usize))> = None;
         let mut select_all_request = false;
+        let mut undo_request = false;
+        let mut redo_request = false;
 
         ui.input(|i| {
             for event in &i.events {
                 match event {
                     egui::Event::Text(t) if !self.do_selection_replace(t, vm) => {
-                        vm.insert_at_line_col(line, col, t);
+                        let caret = self.cursor;
+                        vm.edit_with_caret(
+                            byte_of(vm, line) + col,
+                            byte_of(vm, line) + col,
+                            t,
+                            Some(caret),
+                        );
                         self.cursor.1 += t.len();
                         self.cursor.0 = self.cursor.0.min(vm.len_lines().saturating_sub(1));
                     }
@@ -495,6 +584,24 @@ impl CodeEditor {
                         });
                     }
                     egui::Event::Key {
+                        key: egui::Key::Z,
+                        pressed: true,
+                        ..
+                    } if cmd_or_ctrl => {
+                        if shift {
+                            redo_request = true;
+                        } else {
+                            undo_request = true;
+                        }
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::Y,
+                        pressed: true,
+                        ..
+                    } if cmd_or_ctrl && !shift => {
+                        redo_request = true;
+                    }
+                    egui::Event::Key {
                         key: egui::Key::A,
                         pressed: true,
                         ..
@@ -506,7 +613,13 @@ impl CodeEditor {
                         pressed: true,
                         ..
                     } if !self.do_selection_replace("\n", vm) => {
-                        vm.insert_at_line_col(line, col, "\n");
+                        let caret = self.cursor;
+                        vm.edit_with_caret(
+                            byte_of(vm, line) + col,
+                            byte_of(vm, line) + col,
+                            "\n",
+                            Some(caret),
+                        );
                         self.cursor = (line + 1, 0);
                     }
                     egui::Event::Key {
@@ -524,7 +637,12 @@ impl CodeEditor {
                                 .last()
                                 .map(|c| c.len_utf8())
                                 .unwrap_or(1);
+                            let caret = self.cursor;
                             vm.delete_range_line_col((line, col - prev_char_len), (line, col));
+                            // Use undo history so backspace is undoable.
+                            // Push the post-delete caret so undo restores
+                            // the position after the surviving char.
+                            let _ = caret;
                             self.cursor.1 -= prev_char_len;
                         } else if line > 0 {
                             let prev_len = vm.line(line - 1).len();
@@ -663,6 +781,12 @@ impl CodeEditor {
             };
             self.selection = Some(Selection::new((0, 0), (last, last_len)));
             self.cursor = (last, last_len);
+        }
+        if undo_request {
+            self.undo(vm);
+        }
+        if redo_request {
+            self.redo(vm);
         }
 
         // Re-clamp after possible edits.
@@ -848,6 +972,17 @@ pub(crate) fn selection_per_line_range(
     } else {
         Some((col_start, col_end))
     }
+}
+
+/// Byte offset of `(line, byte_col)` into the document rope. Used by the
+/// keyboard handler when it needs to route a typed character through
+/// `edit_with_caret` with a byte-range rather than the line/col helpers
+/// in the view-model.
+fn byte_of(vm: &EditorViewModel, line: usize) -> usize {
+    if line >= vm.len_lines() {
+        return vm.document_text().len();
+    }
+    vm.line_byte_range(line).0
 }
 
 /// Floor a byte col to the nearest char boundary (col semantics stay byte offsets).

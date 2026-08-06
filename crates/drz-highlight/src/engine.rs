@@ -475,6 +475,49 @@ mod tests {
     }
 
     #[test]
+    fn julia_keywords_types_functions_strings() {
+        let mut eng = HighlightEngine::new(LanguageId::Julia).unwrap().unwrap();
+        let src = "# comment\nfunction greet(name::String)::Int\n    return length(name) + 1\nend\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "# comment").contains(&Style::Comment),
+            "julia line comment not styled"
+        );
+        assert!(
+            line_styles(1, "function").contains(&Style::Keyword),
+            "keyword 'function' not styled"
+        );
+        assert!(
+            line_styles(1, "String").contains(&Style::Type),
+            "type annotation 'String' not styled"
+        );
+        assert!(
+            line_styles(2, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+        assert!(
+            line_styles(3, "end").contains(&Style::Keyword),
+            "keyword 'end' (closing function) not styled"
+        );
+    }
+
+    #[test]
     fn pascal_keywords_types_functions_strings() {
         let mut eng = HighlightEngine::new(LanguageId::Pascal).unwrap().unwrap();
         let src = "{ comment }\nprogram Greeter;\nvar x: Integer;\nbegin\n  x := 42;\nend.\n";

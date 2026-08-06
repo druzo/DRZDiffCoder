@@ -1,4 +1,5 @@
 use crate::theme::{inline_bg, line_bg, style_color};
+use crate::EditorIcons;
 use drz_viewmodel::{EditorViewModel, LineSpan};
 
 /// Whole-row background tint category for a diff line.
@@ -20,15 +21,37 @@ pub struct RowDecor {
 
 pub struct CodeEditor {
     cursor: (usize, usize), // (line, col_byte)
+    selection: Option<drz_viewmodel::Selection>,
+    /// Anchor captured at drag start (left-button drag extends selection).
+    /// `None` outside an active drag.
+    drag_anchor: Option<(usize, usize)>,
+    /// Timestamp + line of the most recent double-click, used to detect
+    /// triple-click within 300 ms on the same line.
+    last_double_click: Option<(std::time::Instant, usize)>,
+    icons: EditorIcons,
 }
 
 impl CodeEditor {
     pub fn new() -> CodeEditor {
-        CodeEditor { cursor: (0, 0) }
+        CodeEditor {
+            cursor: (0, 0),
+            selection: None,
+            drag_anchor: None,
+            last_double_click: None,
+            icons: EditorIcons::new(),
+        }
     }
 
     pub fn cursor(&self) -> (usize, usize) {
         self.cursor
+    }
+
+    pub fn selection(&self) -> Option<&drz_viewmodel::Selection> {
+        self.selection.as_ref()
+    }
+
+    pub fn set_selection(&mut self, sel: Option<drz_viewmodel::Selection>) {
+        self.selection = sel;
     }
 
     pub fn show(
@@ -71,7 +94,7 @@ impl CodeEditor {
                         gutter_width + char_width * max_line_cols(vm) as f32 + 40.0,
                         row_height * rows as f32,
                     ),
-                    egui::Sense::click(),
+                    egui::Sense::click_and_drag(),
                 );
                 let visible = ui.clip_rect();
                 let first_row =
@@ -79,23 +102,96 @@ impl CodeEditor {
                 let last_row =
                     (((visible.bottom() - rect.top()) / row_height).ceil() as usize).min(rows);
 
-                if response.clicked() {
+                // Mouse interaction: click, drag, double-click, triple-click.
+                self.icons.ensure_textures(ui.ctx());
+                let mods = ui.ctx().input(|i| i.modifiers);
+                let shift = mods.shift;
+
+                if response.clicked() || response.drag_started() {
                     response.request_focus();
-                    if let Some(pos) = response.interact_pointer_pos() {
-                        let row = ((pos.y - rect.top()) / row_height).floor() as usize;
-                        let col = x_to_col(pos.x - rect.left() - gutter_width, char_width);
-                        // On a padding row the line_of_row closure returns
-                        // None; clamp to the last valid line so a stale
-                        // cursor (potentially == len_lines) can't survive
-                        // into the next line_byte_range call and panic.
-                        let line = match line_of_row {
-                            Some(f) => f(row).unwrap_or_else(|| vm.len_lines().saturating_sub(1)),
-                            None => row.min(vm.len_lines().saturating_sub(1)),
+                }
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let row = ((pos.y - rect.top()) / row_height).floor() as usize;
+                    let col = x_to_col(pos.x - rect.left() - gutter_width, char_width);
+                    // On a padding row the line_of_row closure returns
+                    // None; clamp to the last valid line so a stale
+                    // cursor (potentially == len_lines) can't survive
+                    // into the next line_byte_range call and panic.
+                    let line = match line_of_row {
+                        Some(f) => f(row).unwrap_or_else(|| vm.len_lines().saturating_sub(1)),
+                        None => row.min(vm.len_lines().saturating_sub(1)),
+                    };
+                    let (span_start, span_end) = vm.line_byte_range(line);
+                    let line_len = span_end - span_start;
+                    let clamped_col = clamp_col(col, line_len);
+
+                    if response.drag_started() {
+                        self.drag_anchor = Some((line, clamped_col));
+                        self.selection = Some(drz_viewmodel::Selection::new(
+                            (line, clamped_col),
+                            (line, clamped_col),
+                        ));
+                        self.cursor = (line, clamped_col);
+                        self.last_double_click = None;
+                    } else if response.dragged() {
+                        if let Some(anchor) = self.drag_anchor {
+                            self.cursor = (line, clamped_col);
+                            self.selection =
+                                Some(drz_viewmodel::Selection::new(anchor, (line, clamped_col)));
+                        }
+                    } else if response.drag_stopped() {
+                        self.drag_anchor = None;
+                    } else if response.double_clicked() {
+                        response.request_focus();
+                        let (ls, le) = vm.line_byte_range(line);
+                        let text_bytes = vm.line(line);
+                        let (l, r) = word_range(&text_bytes, clamped_col);
+                        let abs_l = ls + l;
+                        let abs_r = ls + r;
+                        let _ = le; // (le used implicitly via line_len cap)
+                        self.cursor = (line, abs_r);
+                        self.selection =
+                            Some(drz_viewmodel::Selection::new((line, abs_l), (line, abs_r)));
+                        self.drag_anchor = None;
+                        let now = std::time::Instant::now();
+                        if let Some((prev_at, prev_line)) = self.last_double_click {
+                            if prev_line == line && now.duration_since(prev_at).as_millis() < 300 {
+                                // Triple-click: select the whole line.
+                                let (ls2, _le2) = vm.line_byte_range(line);
+                                let line_len = vm.line(line).len();
+                                self.cursor = (line, line_len);
+                                self.selection = Some(drz_viewmodel::Selection::new(
+                                    (line, ls2.min(ls + line_len)),
+                                    (line, ls + line_len),
+                                ));
+                                self.last_double_click = None;
+                            } else {
+                                self.last_double_click = Some((now, line));
+                            }
+                        } else {
+                            self.last_double_click = Some((now, line));
+                        }
+                    } else if response.clicked() {
+                        let anchor = if shift {
+                            self.selection
+                                .map(|s| s.anchor)
+                                .unwrap_or((line, clamped_col))
+                        } else {
+                            self.drag_anchor = None;
+                            self.last_double_click = None;
+                            (line, clamped_col)
                         };
-                        let (span_start, span_end) = vm.line_byte_range(line);
-                        let line_len = span_end - span_start;
-                        self.cursor = (line, clamp_col(col, line_len));
+                        self.cursor = (line, clamped_col);
+                        self.selection =
+                            Some(drz_viewmodel::Selection::new(anchor, (line, clamped_col)));
+                        if anchor == (line, clamped_col) {
+                            self.selection = None;
+                        }
                     }
+                } else if response.clicked() {
+                    // Click outside any visible row: collapse selection.
+                    self.selection = None;
+                    self.drag_anchor = None;
                 }
 
                 if response.has_focus() {
@@ -159,7 +255,7 @@ impl CodeEditor {
                         None => Some(row),
                     };
                     let Some(line) = line_opt else { continue }; // padding row
-                    // gutter line number
+                                                                 // gutter line number
                     painter.text(
                         egui::pos2(rect.left() + gutter_width - 8.0, y),
                         egui::Align2::RIGHT_TOP,
@@ -316,6 +412,31 @@ pub(crate) fn clamp_col(col: usize, line_byte_len: usize) -> usize {
     col.min(line_byte_len)
 }
 
+/// Byte-col range of the "word" containing `col` in `line`. A word is a
+/// contiguous run of `[A-Za-z0-9_]` bytes. Returns `(left, right)` byte
+/// offsets such that `line[left..right]` is the selected word. If `col` is
+/// on a non-word byte, returns `(col, col)` (empty).
+pub(crate) fn word_range(line: &str, col: usize) -> (usize, usize) {
+    let col = col.min(line.len());
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let bytes = line.as_bytes();
+    if col >= bytes.len() || !is_word(bytes[col]) {
+        // If col sits exactly on the byte AFTER a word (e.g. a space), still
+        // return empty rather than grabbing the prior word. Callers can
+        // shift the click to the nearest word char first if they want.
+        return (col, col);
+    }
+    let mut left = col;
+    while left > 0 && is_word(bytes[left - 1]) {
+        left -= 1;
+    }
+    let mut right = col + 1;
+    while right < bytes.len() && is_word(bytes[right]) {
+        right += 1;
+    }
+    (left, right)
+}
+
 pub(crate) fn x_to_col(x: f32, char_width: f32) -> usize {
     if char_width <= 0.0 {
         return 0;
@@ -444,5 +565,41 @@ mod tests {
             .map(|c| c.len_utf8())
             .unwrap_or(1);
         assert_eq!((col, prev_char_len), (3, 2)); // deletes é, not partial 💣
+    }
+
+    #[test]
+    fn word_bound_left_right_alphanumeric_underscore() {
+        // "foo bar_baz.qux 42" → click at col 5 (in middle of "bar_baz")
+        let line = "foo bar_baz.qux 42";
+        // col 5 ('a' in "bar"): word extends over "_" → "bar_baz".
+        assert_eq!(word_range(line, 5), (4, 11));
+        // col 8 ('b' in "baz"): scan left over '_' into "bar_baz".
+        assert_eq!(word_range(line, 8), (4, 11));
+        // col 12 ('q' in "qux"): right scan stops at space.
+        assert_eq!(word_range(line, 12), (12, 15));
+        // col 16 ('4' in "42"): right scan hits EOL.
+        assert_eq!(word_range(line, 16), (16, 18));
+        // col 20 (past end): clamped → empty at end-of-line.
+        assert_eq!(word_range(line, 20), (18, 18));
+    }
+
+    #[test]
+    fn word_bound_stops_at_non_word() {
+        // "  abc def  " — clicking in "abc" yields "abc".
+        let line = "  abc def  ";
+        assert_eq!(word_range(line, 3), (2, 5));
+        // Click on space → empty range at that col.
+        assert_eq!(word_range(line, 0), (0, 0));
+        assert_eq!(word_range(line, 5), (5, 5));
+    }
+
+    #[test]
+    fn word_bound_utf8_bytewise() {
+        // "  café  " — c=1B, a=1B, f=1B, é=2B (lead C3 + cont A9).
+        // Click at col 4 (inside "caf") → strict impl stops at non-ASCII.
+        let line = "  café  ";
+        assert_eq!(word_range(line, 4), (2, 5)); // bytes 2..5 == "caf"
+                                                 // Click on 'é' (col 5, UTF-8 lead byte) is not an ASCII word char.
+        assert_eq!(word_range(line, 5), (5, 5));
     }
 }

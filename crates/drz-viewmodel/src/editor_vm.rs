@@ -236,8 +236,8 @@ impl EditorViewModel {
     ///
     /// Returns the caret position after the insert: if `new_text` is empty,
     /// returns `start`; otherwise the caret sits at the byte just after the
-    /// last inserted byte (line = `start.0 + count('\n')`, col = byte length
-    /// of the trailing line segment).
+    /// last inserted byte (line = `start.0 + count('\n')`, col = `start.1` +
+    /// byte length of the trailing line segment).
     pub fn replace_selection_with(
         &mut self,
         start: (usize, usize),
@@ -480,5 +480,42 @@ mod tests {
         let (nl, nc) = vm.replace_selection_with(s, e, "Rust");
         assert_eq!(vm.line(0), "hello Rust");
         assert_eq!((nl, nc), (0, 10));
+    }
+
+    #[test]
+    fn replace_selection_with_triple_click_full_line_keeps_trailing_newline() {
+        // Regression for I3 (triple-click off-by-one): the editor's
+        // triple-click handler builds the selection as
+        // [(line, 0), (line, line_byte_len)) where line_byte_len comes
+        // from `Document::line_byte_range` (which EXCLUDES the trailing
+        // newline). The endpoint must not reach into the trailing `\n`,
+        // so deleting the range leaves the prior newline intact.
+        let mut vm = EditorViewModel::from_text("alpha\nbeta\n", LanguageId::PlainText);
+        // Lines: 0="alpha", 1="beta", 2="" (empty trailing from ropey).
+        let target = 1; // the "beta" line — has a trailing newline to protect
+        let (ls, le) = vm.line_byte_range(target);
+        let content_len = le - ls;
+        assert_eq!(content_len, 4);
+        assert_eq!(ls, 6);
+        let before = vm.edit_seq();
+        let (nl, nc) = vm.replace_selection_with((target, 0), (target, content_len), "");
+        assert_eq!(vm.line(0), "alpha");
+        // "beta" replaced with empty; the \n before it stays.
+        assert_eq!(vm.line(target), "");
+        assert_eq!(vm.document_text(), "alpha\n\n");
+        assert_eq!((nl, nc), (target, 0));
+        assert_eq!(vm.edit_seq(), before + 1);
+    }
+
+    #[test]
+    fn replace_selection_with_triple_click_last_line_no_trailing_newline() {
+        // Same invariant as above, but for a doc without a trailing newline.
+        let mut vm = EditorViewModel::from_text("alpha\nbeta", LanguageId::PlainText);
+        let last = 1; // line 0 = "alpha", line 1 = "beta" (no \n after).
+        let (ls, le) = vm.line_byte_range(last);
+        let content_len = le - ls;
+        let (nl, nc) = vm.replace_selection_with((last, 0), (last, content_len), "");
+        assert_eq!(vm.document_text(), "alpha\n");
+        assert_eq!((nl, nc), (last, 0));
     }
 }

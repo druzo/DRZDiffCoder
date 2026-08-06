@@ -314,8 +314,15 @@ In `impl EditorViewModel` (in `editor_vm.rs`), after the existing `replace_lines
     /// line. The convention here is: end is the cursor position after the
     /// last selected byte. So `text_in_range((0,1),(0,4))` over "hello\n"
     /// yields "ell" (cols 1,2,3; col 4 excluded).
+    ///
+    /// Cross-line end convention: when `end.0 != start.0` and `end.1 == 0`
+    /// (cursor at the start of a non-first line), the selection is treated
+    /// as inclusive of the first byte of `end.0`. This matches the
+    /// cursor-display UX where a selection rendered as a highlight that
+    /// ends at the start of the next line still shows that line's first
+    /// character as selected.
     pub fn text_in_range(&self, start: (usize, usize), end: (usize, usize)) -> String {
-        let mut sel = Selection::new(start, end);
+        let sel = Selection::new(start, end);
         let (s, e) = sel.ordered();
         if s == e {
             return String::new();
@@ -326,9 +333,18 @@ In `impl EditorViewModel` (in `editor_vm.rs`), after the existing `replace_lines
         let mut out = String::new();
         for line in s.0..=e.0 {
             let text = self.doc.line(line);
-            let begin = if line == s.0 { start_col.min(text.len()) } else { 0 };
+            let begin = if line == s.0 {
+                start_col.min(text.len())
+            } else {
+                0
+            };
             let finish = if line == e.0 {
-                end_col.min(text.len())
+                let raw = end_col.min(text.len());
+                if !same_line && raw == 0 {
+                    1.min(text.len())
+                } else {
+                    raw
+                }
             } else {
                 text.len()
             };
@@ -430,8 +446,10 @@ In `impl EditorViewModel`, immediately after `text_in_range`, add:
     ///
     /// Returns the caret position after the insert: if `new_text` is empty,
     /// returns `start`; otherwise the caret sits at the byte just after the
-    /// last inserted byte (line = `start.0 + count('\n')`, col = byte length
-    /// of the trailing line segment).
+    /// last inserted byte (line = `start.0 + count('\n')`, col =
+    /// `start.1 + byte_len(trailing_line_segment)`). The col offset is from
+    /// `start.1`, not zero, so an insertion in the middle of a line returns
+    /// the correct absolute col.
     pub fn replace_selection_with(
         &mut self,
         start: (usize, usize),
@@ -466,7 +484,7 @@ In `impl EditorViewModel`, immediately after `text_in_range`, add:
             }
         }
         let trailing = &new_text[last_seg_start..];
-        let new_col = trailing.len();
+        let new_col = start.1 + trailing.len();
         let new_line = start.0 + newlines;
         (new_line, new_col)
     }
@@ -517,11 +535,10 @@ git commit -m "feat(viewmodel): add text_in_range + replace_selection_with"
 
 - [ ] **Step 1: Write the failing test**
 
-Create `/home/druzo/Desenvolvimento/DRZDiffCoder/crates/drz-editor/src/icon.rs`:
+Create `/home/druzo/Desenvolvimento/DRZDiffCoder/crates/drz-editor/src/icon.rs`. Note: `usvg 0.45` does NOT expose `TreeParsing` / `TreeTextToPath` traits / top-level `FontSystem` — those were added in 0.46. The brief's verbatim imports `use usvg::TreeParsing; use usvg::TreeTextToPath;` and `tree.text_to_path(&usvg::FontSystem::new())` will NOT compile against the workspace pin. Drop those calls; the 3 SVG icons are shape-only SF Symbols (`<rect>`/`<path>`/`<polygon>`, no `<text>`), so text-to-path is not needed.
 
 ```rust
 use usvg::TreeParsing;
-use usvg::TreeTextToPath;
 
 const COPY_SVG: &[u8] = include_bytes!("../../../icons/doc.on.clipboard.svg");
 const CUT_SVG: &[u8] = include_bytes!("../../../icons/scissors.svg");
@@ -566,7 +583,6 @@ impl Default for EditorIcons {
 fn rasterize(ctx: &egui::Context, name: &str, svg_bytes: &[u8]) -> Option<egui::TextureHandle> {
     let opt = usvg::Options::default();
     let tree = usvg::Tree::from_data(svg_bytes, &opt).ok()?;
-    let tree = tree.text_to_path(&usvg::FontSystem::new());
     let size = tree.size().width().max(tree.size().height()).max(1.0);
     let scale = ICON_PX as f32 / size;
     let pixmap_w = ICON_PX;
@@ -596,7 +612,7 @@ mod tests {
         let opt = usvg::Options::default();
         let tree = usvg::Tree::from_data(TINY_SVG, &opt);
         assert!(tree.is_ok(), "usvg must parse the minimal SVG fixture");
-        let tree = tree.unwrap().text_to_path(&usvg::FontSystem::new());
+        let tree = tree.unwrap();
         assert!(tree.size().width() > 0.0);
         assert!(tree.size().height() > 0.0);
     }
@@ -622,11 +638,29 @@ mod tests {
 
 - [ ] **Step 2: Wire `icon` module into `lib.rs`**
 
-Open `/home/druzo/Desenvolvimento/DRZDiffCoder/crates/drz-editor/src/lib.rs`. The file currently re-exports from `editor.rs` and `theme.rs`. Add the icon module declaration at the top (alongside existing module declarations — read the file first to see its current shape) and re-export `EditorIcons`. Concretely:
+Open `/home/druzo/Desenvolvimento/DRZDiffCoder/crates/drz-editor/src/lib.rs`. The current contents are:
 
-At the top of `lib.rs`, ensure `pub mod icon;` is declared. At the bottom (alongside other `pub use` lines), add `pub use icon::EditorIcons;`.
+```rust
+mod editor;
+mod theme;
 
-(The file's exact contents may already have a specific structure — read it first and match the existing pattern.)
+pub use editor::{CodeEditor, RowBg, RowDecor};
+pub use theme::{inline_bg, line_bg, style_color};
+```
+
+Replace the module declaration and re-export block with:
+
+```rust
+mod editor;
+mod icon;
+mod theme;
+
+pub use editor::{CodeEditor, RowBg, RowDecor};
+pub use icon::EditorIcons;
+pub use theme::{inline_bg, line_bg, style_color};
+```
+
+The `icon` module stays private (`mod icon;`, not `pub mod icon;`) because consumers only need the `EditorIcons` re-export — internal helper types like `rasterize` don't need to be public.
 
 - [ ] **Step 3: Run tests to verify they pass**
 
@@ -675,17 +709,18 @@ In `crates/drz-editor/src/editor.rs`, the existing test module is at the bottom.
 ```rust
     #[test]
     fn word_bound_left_right_alphanumeric_underscore() {
-        // "foo bar_baz.qux 42" → click at col 5 (inside "foo bar")
+        // "foo bar_baz.qux 42" — 18 bytes: f-o-o- -b-a-r-_-b-a-z-.-q-u-x- -4-2
+        // Click at col 5 (inside "bar"): scan right over '_' into "baz".
         let line = "foo bar_baz.qux 42";
-        assert_eq!(word_range(line, 5), (0, 7)); // "foo bar"
-        // click at col 8 (start of "bar_baz")
-        assert_eq!(word_range(line, 8), (8, 15));
-        // click at col 12 (inside "bar_baz", underscore counts as word char)
-        assert_eq!(word_range(line, 12), (8, 15));
-        // click at col 16 ("qux")
-        assert_eq!(word_range(line, 16), (16, 19));
-        // click at col 20 ("42")
-        assert_eq!(word_range(line, 20), (20, 22));
+        assert_eq!(word_range(line, 5), (4, 11)); // "bar_baz"
+        // Click at col 8 ('b' in "baz"): scan left over '_' into "bar".
+        assert_eq!(word_range(line, 8), (4, 11));
+        // Click at col 12 ('q' in "qux"): right scan stops at space.
+        assert_eq!(word_range(line, 12), (12, 15));
+        // Click at col 16 ('4' in "42"): right scan hits EOL.
+        assert_eq!(word_range(line, 16), (16, 18));
+        // Click past EOL: clamped to line.len()=18, returns empty.
+        assert_eq!(word_range(line, 20), (18, 18));
     }
 
     #[test]
@@ -700,11 +735,18 @@ In `crates/drz-editor/src/editor.rs`, the existing test module is at the bottom.
 
     #[test]
     fn word_bound_utf8_bytewise() {
-        // "  café  " — c=1B, a=1B, f=1B, é=2B. Click at col 4 (inside "café")
+        // "  café  " — c=1B, a=1B, f=1B, é=2B (lead C3 + cont A9).
+        // Click at col 4 (inside "caf") → strict impl stops at non-ASCII;
+        // returns "caf" (bytes 2..5), excluding the UTF-8 'é'.
         let line = "  café  ";
-        assert_eq!(word_range(line, 4), (2, 6)); // bytes 2..6 == "café"
+        assert_eq!(word_range(line, 4), (2, 5));
+        // Click on the UTF-8 lead byte of 'é' (col 5): not an ASCII word
+        // char, returns empty range at that col.
+        assert_eq!(word_range(line, 5), (5, 5));
     }
 ```
+
+**Note on the strict-ASCII word-bound rule:** the impl treats a word as `[A-Za-z0-9_]` only — UTF-8 multi-byte characters are word *breaks*. So clicking at the start of `café` selects `caf` (not `café`). If a later task wants Unicode-aware word selection (e.g. include CJK or accented letters), it must replace `is_word` with a Unicode category check via `char::is_alphanumeric()`.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1015,11 +1057,22 @@ In `crates/drz-editor/src/editor.rs`, the existing `fn handle_keys` is a private
 7. Backspace with selection → `replace_selection_with(start, end, "")` + collapse.
 8. Plain typing with selection → `replace_selection_with(start, end, ch)`.
 
+**Important — the `do_selection_replace` helper must be a method, NOT a closure.** The brief's original sketch used `let mut do_selection_replace = |text, vm| -> bool { ... }` defined in `handle_keys`'s outer scope. This cannot be invoked from inside the nested `ui.input(|i| ...)` closure because both closures need `&mut self` simultaneously → `E0524: two closures require unique access to *self at the same time`. Convert it to a private method `fn do_selection_replace(&mut self, text: &str, vm: &mut EditorViewModel) -> bool`. Behavior is identical.
+
+The other deviation: the `if !do_selection_replace(...) { ... }` pattern in the `Event::Text(t)` and `Event::Key { Enter }` arms triggers clippy's `collapsible_match` lint. Refactor to a match-guard form, e.g.:
+
+```rust
+egui::Event::Text(t) if do_selection_replace(t, vm) => {}
+egui::Event::Text(t) => {
+    vm.insert_at_line_col(line, col, t);
+    ...
+}
+```
+
 Concretely the new body of `handle_keys` is (replace the entire method body from the `let (line, col) = self.cursor;` line through the final `}`):
 
 ```rust
     fn handle_keys(&mut self, ui: &mut egui::Ui, vm: &mut EditorViewModel) {
-        use drz_viewmodel::Selection;
         let (line, col) = self.cursor;
         let col = if line < vm.len_lines() {
             floor_col_boundary(&vm.line(line), col)
@@ -1031,20 +1084,6 @@ Concretely the new body of `handle_keys` is (replace the entire method body from
         let cmd_or_ctrl = mods.command;
         let shift = mods.shift;
 
-        // Selection-aware insert: replaces the current selection (if any) and
-        // leaves the caret at the end of the inserted text. Returns true if
-        // the input was consumed.
-        let mut do_selection_replace = |text: &str, vm: &mut EditorViewModel| -> bool {
-            if let Some(sel) = self.selection.take() {
-                let (s, e) = sel.ordered();
-                let (nl, nc) = vm.replace_selection_with(s, e, text);
-                self.cursor = (nl, nc);
-                true
-            } else {
-                false
-            }
-        };
-
         let mut paste_text: Option<String> = None;
         let mut copy_request: Option<String> = None;
         let mut cut_request: Option<((usize, usize), (usize, usize))> = None;
@@ -1053,12 +1092,11 @@ Concretely the new body of `handle_keys` is (replace the entire method body from
         ui.input(|i| {
             for event in &i.events {
                 match event {
+                    egui::Event::Text(t) if self.do_selection_replace(t, vm) => {}
                     egui::Event::Text(t) => {
-                        if !do_selection_replace(t, vm) {
-                            vm.insert_at_line_col(line, col, t);
-                            self.cursor.1 += t.len();
-                            self.cursor.0 = self.cursor.0.min(vm.len_lines().saturating_sub(1));
-                        }
+                        vm.insert_at_line_col(line, col, t);
+                        self.cursor.1 += t.len();
+                        self.cursor.0 = self.cursor.0.min(vm.len_lines().saturating_sub(1));
                     }
                     egui::Event::Paste(s) => {
                         paste_text = Some(s.clone());
@@ -1080,11 +1118,11 @@ Concretely the new body of `handle_keys` is (replace the entire method body from
                     {
                         select_all_request = true;
                     }
+                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. }
+                        if self.do_selection_replace("\n", vm) => {}
                     egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
-                        if !do_selection_replace("\n", vm) {
-                            vm.insert_at_line_col(line, col, "\n");
-                            self.cursor = (line + 1, 0);
-                        }
+                        vm.insert_at_line_col(line, col, "\n");
+                        self.cursor = (line + 1, 0);
                     }
                     egui::Event::Key {
                         key: egui::Key::Backspace,
@@ -1212,7 +1250,7 @@ Concretely the new body of `handle_keys` is (replace the entire method body from
         if select_all_request {
             let last = vm.len_lines().saturating_sub(1);
             let last_len = if last < vm.len_lines() { vm.line(last).len() } else { 0 };
-            self.selection = Some(Selection::new((0, 0), (last, last_len)));
+            self.selection = Some(drz_viewmodel::Selection::new((0, 0), (last, last_len)));
             self.cursor = (last, last_len);
         }
 
@@ -1223,12 +1261,25 @@ Concretely the new body of `handle_keys` is (replace the entire method body from
         }
     }
 
+    /// Selection-aware insert: replaces the current selection (if any) and
+    /// leaves the caret at the end of the inserted text. Returns true if
+    /// the input was consumed.
+    fn do_selection_replace(&mut self, text: &str, vm: &mut EditorViewModel) -> bool {
+        if let Some(sel) = self.selection.take() {
+            let (s, e) = sel.ordered();
+            let (nl, nc) = vm.replace_selection_with(s, e, text);
+            self.cursor = (nl, nc);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Initialize selection if absent (plain arrow with Shift). Sets anchor
     /// to current caret position; cursor stays where the user is moving.
     fn extend_or_init_selection(&mut self, line: usize, col: usize) {
-        use drz_viewmodel::Selection;
         if self.selection.is_none() {
-            self.selection = Some(Selection::new((line, col), (line, col)));
+            self.selection = Some(drz_viewmodel::Selection::new((line, col), (line, col)));
         }
     }
 ```
@@ -1439,6 +1490,28 @@ git status
 git add -A
 git commit -m "fix: address clippy/fmt nits"
 ```
+
+---
+
+## Final review fix round (post-Task 8)
+
+Whole-branch reviewer flagged **1 Critical**, **4 Important**, **6 Minor** findings on the merged `feature/UXEnchancements` selection+clipboard+context-menu chain (review range `52483f9..7a4e03c`). All Critical + Important addressed; Minors M4–M6 parked (out of scope), M1/M2/M3 quick-fixed.
+
+- **C1 — Selection has no paint pass** (Critical). `editor.rs::show()` painted row backgrounds, text spans, and cursor vline but never read `self.selection` for a highlight overlay. Fix: add a dedicated selection paint pass between the row-bg and text passes. Selection endpoints are snapshotted up front, then for each visible row the per-line byte range is computed via `selection_per_line_range(line, line_byte_len, sel_start, sel_end)` and rendered as a translucent `rect_filled` over the byte range. Tinted color is `from_rgba_unmultiplied(120, 170, 255, 70)` (dark) / `(40, 90, 200, 40)` (light), distinct from added/removed row backgrounds. New helper `selection_per_line_range` is pure-logic and headlessly testable. Manual verification required (per spec §3 + plan Task 8 Step 4 #1).
+- **I1 — Double-click on whitespace is a no-op** (Important). `word_range` returns `(col, col)` for non-word bytes; combined with C1 (no visible highlight), an accidental click on the space between two tokens looked broken. Fix: pre-pass `snap_to_nearest_word(line_bytes, col)` in the double-click handler — scans right (prefer right neighbor) then falls back to left. New helper is unit-tested.
+- **I2 — `paste_text` cleared after first menu paste** (Important). The context-menu Paste arm used `self.paste_text.take()`, leaving the button disabled until the next Ctrl+V. Fix: read by reference (`as_ref()`); the field is overwritten when a fresh `egui::Event::Paste` arrives.
+- **I3 — Triple-click off-by-one risk** (Important, regression test added). The triple-click handler computes `vm.line(line).len()` as `line_len` and clamps selection to `(line, 0)..(line, line_len)`. `Document::line_byte_range` and `Document::line()` both exclude the trailing `\n`, so the endpoint stays inside line content. Tests in `editor_vm.rs` assert `replace_selection_with((line,0),(line,content_len),"")` preserves the trailing newline on both newline-terminated and unterminated docs.
+- **I4 — Right-click collapses selection** (Important). The plain-click branch fired on `response.clicked()` (any mouse button), so right-click mutated selection state even though the context menu was also triggered. Fix: gate the branch to `response.clicked_by(egui::PointerButton::Primary)`, with a comment explaining that secondary clicks are consumed by `response.context_menu(...)` below.
+- **M1 — Doc comment drift on `replace_selection_with`** (Minor, quick-fix). Updated doc to spell out `col = start.1 + byte_len(trailing_line_segment)` (matches `editor_vm.rs` impl + plan text).
+- **M2 — Dead binding `let _ = le;`** (Minor, quick-fix). Removed in editor.rs (#157) and the triple-click branch (replaced `_le2` with `_`).
+- **M3 — `map(...).unwrap_or(false)` → `is_some_and(...)`** (Minor, quick-fix). Idiom clean-up in context-menu enable check.
+
+**Verification (all 5 in-scope crates, `drz-app` clippy debt out of scope):**
+- `cargo fmt --all`: clean.
+- `cargo clippy -p drz-core -p drz-highlight -p drz-viewmodel -p drz-editor -p drz-diff-ui --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: 104 tests pass (25 drz-core + 8 drz-diff-ui + 15 drz-editor + 48 drz-viewmodel + 2 drz-app CLI smoke + 6 drz-highlight + 0 doc tests).
+
+**Parked (M4–M6):** non-square SVG icon collapse at `icon.rs:54` (Apple SF Symbols are square — current behavior intentional); context-menu Cut arm self-selection mutation clarity refactor; pre-existing `drz-app` clippy debt.
 
 ---
 

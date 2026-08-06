@@ -28,11 +28,14 @@ This work unblocks the side-by-side diff view (`drz-diff-ui`) automatically, sin
 |---|---|
 | Left click | Collapse selection to caret. |
 | Left click + drag | Extend selection; anchor at click, cursor follows pointer. |
+| Right click | Open the context menu (does NOT modify the selection). |
 | Shift + click | Extend selection from existing anchor. |
 | Shift + Arrow (← → ↑ ↓) | Extend selection by one col (or one line, keeping col). |
-| Double-click | Select the word under the cursor (alphanumeric + `_`). |
+| Double-click | Select the word under the cursor (alphanumeric + `_`). A click on whitespace snaps to the nearest word char before selection. |
 | Triple-click | Select the current line (start col 0 to end of line, inclusive of trailing `\n` if present). |
 | Ctrl/Cmd + A | Select entire document. |
+
+Selection is rendered as a translucent overlay over the selected byte range, distinct from added/removed row backgrounds. The overlay is drawn after row backgrounds but before text, so it remains visible against added/removed tints. Per-line byte ranges for multi-line selections are computed by `selection_per_line_range`, which returns `(col_start, col_end)` for each row inside the selection and `None` for rows outside.
 
 Word boundary: scan left/right from the click byte-col with `char_indices()`; contiguous runs of `[A-Za-z0-9_]` count as one word. Non-matching characters (operators, whitespace, punctuation, multi-byte CJK) are word breaks.
 

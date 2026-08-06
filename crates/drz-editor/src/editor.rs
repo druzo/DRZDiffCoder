@@ -149,12 +149,17 @@ impl CodeEditor {
                         self.drag_anchor = None;
                     } else if response.double_clicked() {
                         response.request_focus();
-                        let (ls, le) = vm.line_byte_range(line);
+                        let (ls, _le) = vm.line_byte_range(line);
                         let text_bytes = vm.line(line);
-                        let (l, r) = word_range(&text_bytes, clamped_col);
+                        // Snap-to-word pre-pass: `word_range` returns an
+                        // empty slice on a non-word byte (e.g. a space click
+                        // between two words). Without this, an accidental
+                        // click on the gap between two tokens would look like
+                        // a no-op to the user.
+                        let target_col = snap_to_nearest_word(&text_bytes, clamped_col);
+                        let (l, r) = word_range(&text_bytes, target_col);
                         let abs_l = ls + l;
                         let abs_r = ls + r;
-                        let _ = le; // (le used implicitly via line_len cap)
                         self.cursor = (line, abs_r);
                         self.selection =
                             Some(drz_viewmodel::Selection::new((line, abs_l), (line, abs_r)));
@@ -162,8 +167,10 @@ impl CodeEditor {
                         let now = std::time::Instant::now();
                         if let Some((prev_at, prev_line)) = self.last_double_click {
                             if prev_line == line && now.duration_since(prev_at).as_millis() < 300 {
-                                // Triple-click: select the whole line.
-                                let (ls2, _le2) = vm.line_byte_range(line);
+                                // Triple-click: select the whole line content
+                                // (no trailing newline; line_byte_range and
+                                // vm.line().len() both exclude it).
+                                let (ls2, _) = vm.line_byte_range(line);
                                 let line_len = vm.line(line).len();
                                 self.cursor = (line, line_len);
                                 self.selection = Some(drz_viewmodel::Selection::new(
@@ -177,7 +184,11 @@ impl CodeEditor {
                         } else {
                             self.last_double_click = Some((now, line));
                         }
-                    } else if response.clicked() {
+                    } else if response.clicked_by(egui::PointerButton::Primary) {
+                        // Primary (left) click only. Secondary clicks are
+                        // handled by `response.context_menu(...)` below;
+                        // letting them fall into this branch would collapse
+                        // an existing selection on every right-click.
                         let anchor = if shift {
                             self.selection
                                 .map(|s| s.anchor)
@@ -205,7 +216,7 @@ impl CodeEditor {
                 }
 
                 // Right-click context menu.
-                let has_sel = self.selection.map(|s| s.is_selected()).unwrap_or(false);
+                let has_sel = self.selection.is_some_and(|s| s.is_selected());
                 let clipboard_has_text = self.paste_text.is_some();
                 response.context_menu(|ui| {
                     let copy_label = if let Some(t) = self.icons.copy() {
@@ -247,13 +258,13 @@ impl CodeEditor {
                         ui.close_menu();
                     }
                     if ui.add_enabled(clipboard_has_text, paste_label).clicked() {
-                        if let Some(text) = self.paste_text.take() {
+                        if let Some(text) = self.paste_text.as_ref() {
                             if !text.is_empty() {
                                 let (s, e) = match self.selection {
                                     Some(sel) => sel.ordered(),
                                     None => (self.cursor, self.cursor),
                                 };
-                                let (nl, nc) = vm.replace_selection_with(s, e, &text);
+                                let (nl, nc) = vm.replace_selection_with(s, e, text);
                                 self.cursor = (nl, nc);
                                 self.selection = None;
                             }
@@ -294,7 +305,10 @@ impl CodeEditor {
                     gutter_separator,
                 );
 
-                // Paint row backgrounds + inline emphasis first, then text on top.
+                // Paint row backgrounds + inline emphasis first, then
+                // selection highlight on top of those (so the selection tint
+                // is visible against added/removed row backgrounds), and
+                // finally text + cursor on top of everything.
                 for row in first_row..last_row {
                     let y = rect.top() + row as f32 * row_height;
                     if let Some(decor) = row_decor.and_then(|f| f(row)) {
@@ -322,6 +336,51 @@ impl CodeEditor {
                                     inline_bg(bg, dark),
                                 );
                             }
+                        }
+                    }
+                }
+                // Selection highlight pass: translucent overlay per row that
+                // intersects the active selection. Ordered endpoints are
+                // snapshotted up front so we don't fight the `&mut vm` borrow
+                // inside the row loop.
+                let sel_data: Option<((usize, usize), (usize, usize))> =
+                    self.selection.as_ref().and_then(|s| {
+                        if s.is_selected() {
+                            Some(s.ordered())
+                        } else {
+                            None
+                        }
+                    });
+                let sel_color = if dark {
+                    egui::Color32::from_rgba_unmultiplied(120, 170, 255, 70)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(40, 90, 200, 40)
+                };
+                if let Some((sel_start, sel_end)) = sel_data {
+                    for row in first_row..last_row {
+                        let y = rect.top() + row as f32 * row_height;
+                        let line_opt = match line_of_row {
+                            Some(f) => f(row),
+                            None => Some(row),
+                        };
+                        let Some(line) = line_opt else {
+                            continue; // padding row
+                        };
+                        let (_ls, le) = vm.line_byte_range(line);
+                        let line_len = le - _ls;
+                        if let Some((cs, ce)) =
+                            selection_per_line_range(line, line_len, sel_start, sel_end)
+                        {
+                            let x = rect.left() + gutter_width + cs as f32 * char_width;
+                            let w = (ce - cs) as f32 * char_width;
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(x, y),
+                                    egui::vec2(w, row_height),
+                                ),
+                                0.0,
+                                sel_color,
+                            );
                         }
                     }
                 }
@@ -679,6 +738,43 @@ pub(crate) fn word_range(line: &str, col: usize) -> (usize, usize) {
     (left, right)
 }
 
+/// Return the byte col of the nearest ASCII word char to `col` in `line`.
+/// Used by double-click to recover from clicks that land on whitespace:
+/// `word_range` returns empty on non-word bytes, so without this pre-pass a
+/// click on the space between two words silently does nothing.
+pub(crate) fn snap_to_nearest_word(line: &str, col: usize) -> usize {
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    if len == 0 {
+        return col;
+    }
+    let col = col.min(len);
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    if col < len && is_word(bytes[col]) {
+        return col;
+    }
+    // Prefer the word on the right of the gap.
+    let mut right = col + 1;
+    while right < len && !is_word(bytes[right]) {
+        right += 1;
+    }
+    if right < len {
+        return right;
+    }
+    // Fall back to the word on the left.
+    if col == 0 {
+        return col;
+    }
+    let mut left = col;
+    while left > 0 && !is_word(bytes[left - 1]) {
+        left -= 1;
+    }
+    if left > 0 {
+        return left - 1;
+    }
+    col
+}
+
 pub(crate) fn x_to_col(x: f32, char_width: f32) -> usize {
     if char_width <= 0.0 {
         return 0;
@@ -697,6 +793,35 @@ pub(crate) fn inline_rect_x(
     let x = gutter_right_x + start_col as f32 * char_width;
     let w = (end_col as f32 - start_col as f32) * char_width;
     (x, w)
+}
+
+/// Byte-col range of the selected portion of `selection_line`, given the
+/// ordered selection endpoints `(sel_start, sel_end)`. Returns `None` for
+/// lines outside the selection or for empty per-line slices.
+pub(crate) fn selection_per_line_range(
+    selection_line: usize,
+    line_byte_len: usize,
+    sel_start: (usize, usize),
+    sel_end: (usize, usize),
+) -> Option<(usize, usize)> {
+    if selection_line < sel_start.0 || selection_line > sel_end.0 {
+        return None;
+    }
+    let col_start = if selection_line == sel_start.0 {
+        sel_start.1
+    } else {
+        0
+    };
+    let col_end = if selection_line == sel_end.0 {
+        sel_end.1
+    } else {
+        line_byte_len
+    };
+    if col_start >= col_end {
+        None
+    } else {
+        Some((col_start, col_end))
+    }
 }
 
 /// Floor a byte col to the nearest char boundary (col semantics stay byte offsets).
@@ -871,5 +996,41 @@ mod tests {
         assert_eq!(word_range(line, 4), (2, 5)); // bytes 2..5 == "caf"
                                                  // Click on 'é' (col 5, UTF-8 lead byte) is not an ASCII word char.
         assert_eq!(word_range(line, 5), (5, 5));
+    }
+
+    #[test]
+    fn snap_to_nearest_word_recovers_from_space_click() {
+        // "foo bar baz" → f(0) o(1) o(2) space(3) b(4) a(5) r(6) space(7) b(8) a(9) z(10)
+        let line = "foo bar baz";
+        // Already on a word: identity.
+        assert_eq!(snap_to_nearest_word(line, 4), 4);
+        // On the space between "foo" and "bar": prefer right.
+        assert_eq!(snap_to_nearest_word(line, 3), 4);
+        // On the space between "bar" and "baz": prefer right.
+        assert_eq!(snap_to_nearest_word(line, 7), 8);
+        // End-of-line fallback: left.
+        assert_eq!(snap_to_nearest_word(line, 11), 10);
+        // Empty line: returns the input col.
+        assert_eq!(snap_to_nearest_word("", 0), 0);
+    }
+
+    #[test]
+    fn selection_per_line_range_handles_multi_line_and_edges() {
+        // Multi-line selection [(0,2)..(2,5)].
+        // Start line 0 → [col_start, line_byte_len].
+        assert_eq!(selection_per_line_range(0, 8, (0, 2), (2, 5)), Some((2, 8)));
+        // Middle line 1 → full line.
+        assert_eq!(
+            selection_per_line_range(1, 10, (0, 2), (2, 5)),
+            Some((0, 10))
+        );
+        // End line 2 → [0, col_end] — selecting to EOL is a valid range.
+        assert_eq!(selection_per_line_range(2, 8, (0, 2), (2, 5)), Some((0, 5)));
+        // Single-line selection.
+        assert_eq!(selection_per_line_range(0, 8, (0, 2), (0, 5)), Some((2, 5)));
+        // Outside the selection → None.
+        assert_eq!(selection_per_line_range(3, 8, (0, 2), (2, 5)), None);
+        // Start-line endpoint lands on line boundary → empty per-line slice.
+        assert_eq!(selection_per_line_range(0, 8, (0, 8), (2, 5)), None);
     }
 }

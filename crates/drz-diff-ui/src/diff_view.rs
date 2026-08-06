@@ -163,7 +163,7 @@ impl DiffView {
         // view (PageUp/Down, arrow keys, etc.) writes the pixel offset
         // here. Both editors then adopt the same scroll, so the diff
         // panes stay synced.
-        let mut scroll_target: Option<f32> = None;
+        let mut scroll_target: Option<egui::Vec2> = None;
 
         let mut left_ui = ui.new_child(
             egui::UiBuilder::new()

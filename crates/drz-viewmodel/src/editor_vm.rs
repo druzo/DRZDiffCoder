@@ -3,6 +3,46 @@ use drz_core::{CoreError, Document, NewlinePolicy, TextEdit};
 use drz_highlight::{HighlightEdit, HighlightEngine, LanguageId};
 use std::path::Path;
 
+/// Half-open text selection in `(line, byte_col)` coordinates.
+/// `anchor` is fixed (click position); `cursor` follows pointer / arrow keys.
+/// Byte-col, not char-col, to match the rest of the editor's coordinate system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    pub anchor: (usize, usize),
+    pub cursor: (usize, usize),
+}
+
+impl Selection {
+    pub fn new(anchor: (usize, usize), cursor: (usize, usize)) -> Self {
+        Self { anchor, cursor }
+    }
+
+    /// Return `(start, end)` with `start <= end` bytewise
+    /// (`(line, col).0 * u32::MAX as usize + col` ordering). Handles both
+    /// same-line and cross-line ordering.
+    pub fn ordered(&self) -> ((usize, usize), (usize, usize)) {
+        let a = self.anchor;
+        let c = self.cursor;
+        let key = |p: (usize, usize)| (p.0, p.1);
+        if key(a) <= key(c) {
+            (a, c)
+        } else {
+            (c, a)
+        }
+    }
+
+    /// `true` iff the selection covers at least one byte (cursor != anchor).
+    pub fn is_selected(&self) -> bool {
+        self.anchor != self.cursor
+    }
+
+    /// Collapse to anchor — cursor jumps to anchor. Keeps anchor fixed so a
+    /// subsequent Shift+arrow extends from the same anchor.
+    pub fn collapse(&mut self) {
+        self.cursor = self.anchor;
+    }
+}
+
 pub struct EditorViewModel {
     doc: Document,
     engine: Option<HighlightEngine>,
@@ -180,5 +220,46 @@ mod tests {
         assert_eq!(vm.line(0), "// gone");
         let (_, spans) = vm.styled_line(0);
         assert!(spans.iter().any(|s| s.style == Style::Comment));
+    }
+
+    #[test]
+    fn selection_ordered_returns_min_max_bytewise() {
+        let s = Selection::new((2, 5), (1, 3));
+        assert_eq!(s.ordered(), ((1, 3), (2, 5)));
+    }
+
+    #[test]
+    fn selection_ordered_already_in_order() {
+        let s = Selection::new((0, 1), (0, 4));
+        assert_eq!(s.ordered(), ((0, 1), (0, 4)));
+    }
+
+    #[test]
+    fn selection_is_selected_false_when_collapsed() {
+        let s = Selection::new((2, 5), (2, 5));
+        assert!(!s.is_selected());
+    }
+
+    #[test]
+    fn selection_is_selected_true_when_anchor_differs() {
+        let s = Selection::new((0, 0), (3, 0));
+        assert!(s.is_selected());
+        let s = Selection::new((0, 0), (0, 7));
+        assert!(s.is_selected());
+    }
+
+    #[test]
+    fn selection_collapse_moves_cursor_to_anchor() {
+        let mut s = Selection::new((0, 3), (5, 0));
+        s.collapse();
+        assert_eq!(s.cursor, s.anchor);
+        assert_eq!(s.cursor, (0, 3));
+    }
+
+    #[test]
+    fn selection_new_accepts_reversed_endpoints() {
+        let s = Selection::new((4, 2), (1, 5));
+        assert_eq!(s.anchor, (4, 2));
+        assert_eq!(s.cursor, (1, 5));
     }
 }

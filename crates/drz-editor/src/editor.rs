@@ -144,6 +144,8 @@ impl CodeEditor {
             vm.len_lines()
         };
 
+        let scroll_target_line: std::rc::Rc<std::cell::RefCell<Option<usize>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
         let output = egui::ScrollArea::both()
             .auto_shrink([false, false])
             .id_salt(ui.id().with("editor_scroll"))
@@ -161,6 +163,7 @@ impl CodeEditor {
                     ((visible.top() - rect.top()) / row_height).floor().max(0.0) as usize;
                 let last_row =
                     (((visible.bottom() - rect.top()) / row_height).ceil() as usize).min(rows);
+                let visible_rows = last_row.saturating_sub(first_row).max(1);
 
                 // Mouse interaction: click, drag, double-click, triple-click.
                 self.icons.ensure_textures(ui.ctx());
@@ -169,12 +172,13 @@ impl CodeEditor {
 
                 if response.clicked() || response.drag_started() {
                     response.request_focus();
-                    // Lock arrow keys to this widget so egui's spatial focus
-                    // navigation doesn't yank focus to the merge-arrow buttons
-                    // in the diff view's center strip on Shift+Arrow (or plain
-                    // Arrow) presses. `set_focus_lock_filter` is a no-op
-                    // unless this widget currently has focus, so calling it
-                    // every frame is safe.
+                }
+                // Reassert the focus-lock filter every paint while focused.
+                // The previous version only set this on click frames, which
+                // let egui's spatial focus engine yank focus on Tab/arrows
+                // after a resize or a side swap. The call is a no-op unless
+                // the widget already has focus, so it's cheap.
+                if response.has_focus() {
                     ui.ctx().memory_mut(|mem| {
                         mem.set_focus_lock_filter(
                             response.id,
@@ -260,7 +264,7 @@ impl CodeEditor {
                 }
 
                 if response.has_focus() {
-                    self.handle_keys(ui, vm);
+                    self.handle_keys(ui, vm, &scroll_target_line, visible_rows, row_height);
                 }
 
                 // Right-click context menu.
@@ -484,18 +488,36 @@ impl CodeEditor {
                         galley,
                         ui.visuals().text_color(),
                     );
-                    // cursor
+                    // cursor: 500ms half-period blink, only when focused and
+                    // on this row. request_repaint keeps the animation
+                    // ticking even when nothing else invalidates the frame.
                     if focused && self.cursor.0 == line {
-                        let cx = rect.left() + gutter_width + self.cursor.1 as f32 * char_width;
-                        painter.vline(
-                            cx,
-                            y..=y + row_height,
-                            egui::Stroke::new(1.0, ui.visuals().strong_text_color()),
-                        );
+                        let time = ui.ctx().input(|i| i.time);
+                        let blink_on = (time % 1.0) < 0.5;
+                        if blink_on {
+                            let cx = rect.left() + gutter_width + self.cursor.1 as f32 * char_width;
+                            painter.vline(
+                                cx,
+                                y..=y + row_height,
+                                egui::Stroke::new(1.0, ui.visuals().strong_text_color()),
+                            );
+                        }
                     }
                 }
+                if focused {
+                    ui.ctx().request_repaint();
+                }
             });
-        *scroll = output.state.offset;
+        // handle_keys may have requested that a specific line be scrolled
+        // into view (PageUp / PageDown). Apply it before reading the final
+        // offset from ScrollArea. Scope the borrow so the `Ref` temp drops
+        // before `scroll_target_line` is dropped at function end.
+        let target_line: Option<usize> = *scroll_target_line.borrow();
+        if let Some(line) = target_line {
+            *scroll = egui::vec2(scroll.x, (line as f32 * row_height).max(0.0));
+        } else {
+            *scroll = output.state.offset;
+        }
     }
 
     /// Row-aligned variant of [`CodeEditor::show`]: `row_map[row]` gives the
@@ -525,7 +547,14 @@ impl CodeEditor {
         );
     }
 
-    fn handle_keys(&mut self, ui: &mut egui::Ui, vm: &mut EditorViewModel) {
+    fn handle_keys(
+        &mut self,
+        ui: &mut egui::Ui,
+        vm: &mut EditorViewModel,
+        scroll_target_line: &std::rc::Rc<std::cell::RefCell<Option<usize>>>,
+        visible_rows: usize,
+        _row_height: f32,
+    ) {
         use drz_viewmodel::Selection;
         let (line, col) = self.cursor;
         let col = if line < vm.len_lines() {
@@ -745,6 +774,88 @@ impl CodeEditor {
                             self.cursor.0 += 1;
                             self.cursor.1 = clamp_col(col, next_len);
                         }
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::Home,
+                        pressed: true,
+                        ..
+                    } => {
+                        if shift {
+                            self.extend_or_init_selection(line, col);
+                            if let Some(sel) = self.selection.as_mut() {
+                                sel.cursor.1 = 0;
+                            }
+                        } else {
+                            self.selection = None;
+                        }
+                        self.cursor.1 = 0;
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::End,
+                        pressed: true,
+                        ..
+                    } => {
+                        let line_len = vm.line(line).len();
+                        if shift {
+                            self.extend_or_init_selection(line, col);
+                            if let Some(sel) = self.selection.as_mut() {
+                                sel.cursor.1 = clamp_col(line_len, line_len);
+                            }
+                        } else {
+                            self.selection = None;
+                        }
+                        self.cursor.1 = clamp_col(line_len, line_len);
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::PageUp,
+                        pressed: true,
+                        ..
+                    } => {
+                        let page = page_lines_for(visible_rows);
+                        let new_line = line.saturating_sub(page);
+                        let new_len = if new_line < vm.len_lines() {
+                            vm.line(new_line).len()
+                        } else {
+                            0
+                        };
+                        if shift {
+                            self.extend_or_init_selection(line, col);
+                            if let Some(sel) = self.selection.as_mut() {
+                                sel.cursor.0 = new_line;
+                                sel.cursor.1 = clamp_col(sel.cursor.1, new_len);
+                            }
+                        } else {
+                            self.selection = None;
+                        }
+                        self.cursor.0 = new_line;
+                        self.cursor.1 = clamp_col(col, new_len);
+                        ensure_line_visible(scroll_target_line, self.cursor.0);
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::PageDown,
+                        pressed: true,
+                        ..
+                    } => {
+                        let page = page_lines_for(visible_rows);
+                        let last = vm.len_lines().saturating_sub(1);
+                        let new_line = (line + page).min(last);
+                        let new_len = if new_line < vm.len_lines() {
+                            vm.line(new_line).len()
+                        } else {
+                            0
+                        };
+                        if shift {
+                            self.extend_or_init_selection(line, col);
+                            if let Some(sel) = self.selection.as_mut() {
+                                sel.cursor.0 = new_line;
+                                sel.cursor.1 = clamp_col(sel.cursor.1, new_len);
+                            }
+                        } else {
+                            self.selection = None;
+                        }
+                        self.cursor.0 = new_line;
+                        self.cursor.1 = clamp_col(col, new_len);
+                        ensure_line_visible(scroll_target_line, self.cursor.0);
                     }
                     _ => {}
                 }
@@ -996,6 +1107,28 @@ pub(crate) fn floor_col_boundary(line: &str, col: usize) -> usize {
     col
 }
 
+/// Line count for one "page" of vertical movement (PageUp / PageDown).
+/// Roughly the number of visible rows minus a small overlap so the cursor
+/// doesn't jump clear of the previous viewport. Pure-logic helper so the
+/// page-size math is unit-testable without an `egui::Context`.
+pub(crate) fn page_lines_for(visible_rows: usize) -> usize {
+    if visible_rows == 0 {
+        return 1;
+    }
+    ((visible_rows as f32 * 0.85).floor() as usize).max(1)
+}
+
+/// Record that the row at `line` should be scrolled into view. Called from
+/// PageUp / PageDown so the cursor stays on-screen. The caller (show())
+/// reads the proxy cell after the scroll area's paint closure finishes
+/// and translates `line` into a `Vec2` offset using the known row height.
+fn ensure_line_visible(
+    scroll_target_line: &std::rc::Rc<std::cell::RefCell<Option<usize>>>,
+    line: usize,
+) {
+    *scroll_target_line.borrow_mut() = Some(line);
+}
+
 fn max_line_cols(vm: &EditorViewModel) -> usize {
     (0..vm.len_lines())
         .map(|i| vm.line(i).len())
@@ -1077,6 +1210,26 @@ mod tests {
     fn clamp_col_to_line_len() {
         assert_eq!(clamp_col(10, 4), 4);
         assert_eq!(clamp_col(2, 4), 2);
+    }
+
+    #[test]
+    fn page_lines_for_uses_eighty_five_percent_of_visible() {
+        // PageUp / PageDown move by ~85% of visible rows so the user keeps
+        // some context across the jump.
+        assert_eq!(page_lines_for(0), 1); // floor of 0 → at least 1
+        assert_eq!(page_lines_for(1), 1); // 0.85 → 0 → max(1)
+        assert_eq!(page_lines_for(10), 8); // 10 * 0.85 = 8.5 → 8
+        assert_eq!(page_lines_for(20), 17); // 20 * 0.85 = 17
+        assert_eq!(page_lines_for(100), 85); // 100 * 0.85 = 85
+    }
+
+    #[test]
+    fn ensure_line_visible_writes_to_proxy_cell() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let proxy: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        ensure_line_visible(&proxy, 42);
+        assert_eq!(*proxy.borrow(), Some(42));
     }
 
     #[test]

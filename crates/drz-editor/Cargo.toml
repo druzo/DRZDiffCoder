@@ -7,3 +7,6 @@ edition = "2021"
 [dependencies]
 egui.workspace = true
 drz-viewmodel = { path = "../drz-viewmodel" }
+resvg.workspace = true
+usvg.workspace = true
+tiny-skia.workspace = true

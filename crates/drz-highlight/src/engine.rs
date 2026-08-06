@@ -794,4 +794,94 @@ mod tests {
             "keyword 'end' not styled"
         );
     }
+
+    #[test]
+    fn objc_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::ObjectiveC).unwrap().unwrap();
+        let rope = Rope::from_str("@interface Foo : NSObject\n@end\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn objc_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::ObjectiveC).unwrap().unwrap();
+        let src = "// comment\n#define MAX 100\nNSString *s = @\"hello\";\nint x = 42;\nif (x > 0) return YES;\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "// comment").contains(&Style::Comment),
+            "objc line comment not styled"
+        );
+        assert!(
+            line_styles(1, "#define").contains(&Style::Keyword),
+            "preprocessor 'define' not styled"
+        );
+        assert!(
+            line_styles(2, "@\"hello\"").contains(&Style::StringLit),
+            "objc string literal not styled"
+        );
+        assert!(
+            line_styles(3, "42").contains(&Style::Number),
+            "number '42' not styled"
+        );
+        assert!(
+            line_styles(4, "if").contains(&Style::Keyword),
+            "keyword 'if' not styled"
+        );
+        assert!(
+            line_styles(4, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+    }
+
+    #[test]
+    fn objc_at_directives_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::ObjectiveC).unwrap().unwrap();
+        let src = "@interface Foo : NSObject\n@property NSString *name;\n@end\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "@interface").contains(&Style::Keyword),
+            "@interface not styled"
+        );
+        assert!(
+            line_styles(1, "@property").contains(&Style::Keyword),
+            "@property not styled"
+        );
+        assert!(
+            line_styles(2, "@end").contains(&Style::Keyword),
+            "@end not styled"
+        );
+    }
 }

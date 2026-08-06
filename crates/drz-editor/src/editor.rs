@@ -115,6 +115,23 @@ impl CodeEditor {
 
                 if response.clicked() || response.drag_started() {
                     response.request_focus();
+                    // Lock arrow keys to this widget so egui's spatial focus
+                    // navigation doesn't yank focus to the merge-arrow buttons
+                    // in the diff view's center strip on Shift+Arrow (or plain
+                    // Arrow) presses. `set_focus_lock_filter` is a no-op
+                    // unless this widget currently has focus, so calling it
+                    // every frame is safe.
+                    ui.ctx().memory_mut(|mem| {
+                        mem.set_focus_lock_filter(
+                            response.id,
+                            egui::EventFilter {
+                                tab: false,
+                                horizontal_arrows: true,
+                                vertical_arrows: true,
+                                escape: false,
+                            },
+                        );
+                    });
                 }
                 if let Some(pos) = response.interact_pointer_pos() {
                     let row = ((pos.y - rect.top()) / row_height).floor() as usize;
@@ -147,43 +164,20 @@ impl CodeEditor {
                         }
                     } else if response.drag_stopped() {
                         self.drag_anchor = None;
-                    } else if response.double_clicked() {
+                    } else if response.triple_clicked() {
+                        // Triple-click: egui tags click 3 of a triple gesture
+                        // as `triple_clicked` (NOT `double_clicked`), so this
+                        // branch must come before the double-click arm or
+                        // triple-click is unreachable.
                         response.request_focus();
-                        let (ls, _le) = vm.line_byte_range(line);
-                        let text_bytes = vm.line(line);
-                        // Snap-to-word pre-pass: `word_range` returns an
-                        // empty slice on a non-word byte (e.g. a space click
-                        // between two words). Without this, an accidental
-                        // click on the gap between two tokens would look like
-                        // a no-op to the user.
-                        let target_col = snap_to_nearest_word(&text_bytes, clamped_col);
-                        let (l, r) = word_range(&text_bytes, target_col);
-                        let abs_l = ls + l;
-                        let abs_r = ls + r;
-                        self.cursor = (line, abs_r);
-                        self.selection =
-                            Some(drz_viewmodel::Selection::new((line, abs_l), (line, abs_r)));
-                        self.drag_anchor = None;
-                        let now = std::time::Instant::now();
-                        if let Some((prev_at, prev_line)) = self.last_double_click {
-                            if prev_line == line && now.duration_since(prev_at).as_millis() < 300 {
-                                // Triple-click: select the whole line content
-                                // (no trailing newline; line_byte_range and
-                                // vm.line().len() both exclude it).
-                                let (ls2, _) = vm.line_byte_range(line);
-                                let line_len = vm.line(line).len();
-                                self.cursor = (line, line_len);
-                                self.selection = Some(drz_viewmodel::Selection::new(
-                                    (line, ls2.min(ls + line_len)),
-                                    (line, ls + line_len),
-                                ));
-                                self.last_double_click = None;
-                            } else {
-                                self.last_double_click = Some((now, line));
-                            }
-                        } else {
-                            self.last_double_click = Some((now, line));
-                        }
+                        self.apply_triple_click(line, vm);
+                    } else if response.double_clicked() {
+                        // Click 2 of a double-click (or click 3 of a triple
+                        // whose third click egui already routed to the
+                        // triple_clicked arm above). Snap-to-word pre-pass
+                        // recovers from clicks that land on whitespace.
+                        response.request_focus();
+                        self.apply_double_click(line, clamped_col, vm);
                     } else if response.clicked_by(egui::PointerButton::Primary) {
                         // Primary (left) click only. Secondary clicks are
                         // handled by `response.context_menu(...)` below;
@@ -701,6 +695,37 @@ impl CodeEditor {
             self.selection = Some(Selection::new((line, col), (line, col)));
         }
     }
+
+    /// Double-click handler: select the word under `line` at `clicked_col`.
+    /// Snap-to-word recovers from clicks on whitespace. Extracted as a method
+    /// so it can be unit-tested without an `egui::Context`.
+    fn apply_double_click(&mut self, line: usize, clicked_col: usize, vm: &EditorViewModel) {
+        let (ls, _le) = vm.line_byte_range(line);
+        let text_bytes = vm.line(line);
+        let target_col = snap_to_nearest_word(&text_bytes, clicked_col);
+        let (l, r) = word_range(&text_bytes, target_col);
+        let abs_l = ls + l;
+        let abs_r = ls + r;
+        self.cursor = (line, abs_r);
+        self.selection = Some(drz_viewmodel::Selection::new((line, abs_l), (line, abs_r)));
+        self.drag_anchor = None;
+        // Record the click time so a *third* click within 300 ms on the same
+        // line would have triggered a triple-click. We no longer handle triple-
+        // click via time-based detection (egui tags click 3 as
+        // `triple_clicked`, handled by `apply_triple_click` directly), so
+        // clearing here is sufficient.
+        self.last_double_click = None;
+    }
+
+    /// Triple-click handler: select the entire `line` (line content, no
+    /// trailing newline). Extracted for unit-testability.
+    fn apply_triple_click(&mut self, line: usize, vm: &EditorViewModel) {
+        let line_len = vm.line(line).len();
+        self.cursor = (line, line_len);
+        self.selection = Some(drz_viewmodel::Selection::new((line, 0), (line, line_len)));
+        self.drag_anchor = None;
+        self.last_double_click = None;
+    }
 }
 
 impl Default for CodeEditor {
@@ -1032,5 +1057,123 @@ mod tests {
         assert_eq!(selection_per_line_range(3, 8, (0, 2), (2, 5)), None);
         // Start-line endpoint lands on line boundary → empty per-line slice.
         assert_eq!(selection_per_line_range(0, 8, (0, 8), (2, 5)), None);
+    }
+
+    // -------------------------------------------------------------------
+    // Regression tests for the 3 bugs reported on develop after merge:
+    //   1. Shift+Arrow focus jumping to merge-arrow buttons.
+    //   2. Double-click not selecting the word.
+    //   3. Triple-click not selecting the line.
+    //
+    // Bug 1 (focus lock) is fixed via `set_focus_lock_filter` in the mouse
+    // block; that code path requires an `egui::Context` and is not directly
+    // unit-testable. The fix is verified by manual smoke (see task plan).
+    //
+    // Bugs 2 & 3 are fixed by routing through `apply_double_click` and
+    // `apply_triple_click` (extracted as methods precisely so they can be
+    // tested headlessly below).
+    // -------------------------------------------------------------------
+
+    use drz_viewmodel::{EditorViewModel, LanguageId};
+
+    fn make_vm(text: &str) -> EditorViewModel {
+        EditorViewModel::from_text(text, LanguageId::PlainText)
+    }
+
+    #[test]
+    fn double_click_handler_selects_word_at_clicked_col() {
+        // Bug 2 regression: clicking at the middle of a word selects the
+        // entire word. The user's "double-click" gesture is a sequence of
+        // (click, double-click); this test exercises the double-click path.
+        let mut editor = CodeEditor::new();
+        let vm = make_vm("hello world\n");
+        editor.apply_double_click(0, 2, &vm); // click on 'l' of "hello"
+        let sel = editor.selection().expect("selection set");
+        let (s, e) = sel.ordered();
+        assert_eq!(s, (0, 0));
+        assert_eq!(e, (0, 5));
+        assert_eq!(editor.cursor(), (0, 5));
+    }
+
+    #[test]
+    fn double_click_handler_survives_third_click_in_selection() {
+        // Bug 2 regression (the precise failure mode users hit): on click 3
+        // of what the user *intended* as a double-click, egui tags the click
+        // as `triple_clicked`. With the new branch ordering
+        // (triple → double → click_by_primary), click 3 now routes to
+        // `apply_triple_click`, and the word selection from click 2 is
+        // replaced by the line selection. This test simulates click 2 (word)
+        // then click 3 (line) and verifies the final state.
+        let mut editor = CodeEditor::new();
+        let vm = make_vm("hello world\n");
+        editor.apply_double_click(0, 2, &vm); // click 2: word "hello"
+        let word_sel = editor.selection().expect("word selection set");
+        let (s, _e) = word_sel.ordered();
+        assert_eq!(s, (0, 0));
+        assert_eq!(_e, (0, 5));
+        // Click 3: triple-click replaces with line selection ("hello world",
+        // 11 bytes; trailing \n excluded).
+        editor.apply_triple_click(0, &vm);
+        let line_sel = editor.selection().expect("line selection set");
+        let (s, e) = line_sel.ordered();
+        assert_eq!(s, (0, 0));
+        assert_eq!(e, (0, 11));
+    }
+
+    #[test]
+    fn double_click_handler_snap_to_word_from_space() {
+        // A click on whitespace recovers to the nearest word.
+        let mut editor = CodeEditor::new();
+        let vm = make_vm("hello world\n");
+        editor.apply_double_click(0, 5, &vm); // click on the space between words
+        let sel = editor.selection().expect("selection set");
+        let (s, e) = sel.ordered();
+        // Should snap to one of the two adjacent words (either is acceptable
+        // per `snap_to_nearest_word` semantics).
+        assert!(s == (0, 0) && e == (0, 5) || s == (0, 6) && e == (0, 11));
+    }
+
+    #[test]
+    fn triple_click_handler_selects_entire_line() {
+        // Bug 3 regression: clicking three times selects the whole line
+        // content (not including the trailing newline).
+        let mut editor = CodeEditor::new();
+        let vm = make_vm("hello world\n");
+        editor.apply_triple_click(0, &vm);
+        let sel = editor.selection().expect("selection set");
+        let (s, e) = sel.ordered();
+        assert_eq!(s, (0, 0));
+        assert_eq!(e, (0, 11));
+        assert_eq!(editor.cursor(), (0, 11));
+    }
+
+    #[test]
+    fn triple_click_handler_works_on_multi_line_doc() {
+        let mut editor = CodeEditor::new();
+        let vm = make_vm("first\nsecond\nthird\n");
+        editor.apply_triple_click(1, &vm); // triple-click on "second"
+        let sel = editor.selection().expect("selection set");
+        let (s, e) = sel.ordered();
+        assert_eq!(s, (1, 0));
+        assert_eq!(e, (1, 6));
+    }
+
+    #[test]
+    fn triple_click_clears_double_click_state() {
+        // After a triple-click, `last_double_click` is cleared so a
+        // subsequent double-click elsewhere isn't misinterpreted as the
+        // third click of a continuing triple.
+        let mut editor = CodeEditor::new();
+        let vm = make_vm("aaa bbb\n");
+        editor.apply_double_click(0, 1, &vm);
+        editor.apply_triple_click(0, &vm);
+        // Now double-click on line 0 col 5 ('b' of "bbb").
+        editor.apply_double_click(0, 5, &vm);
+        let sel = editor
+            .selection()
+            .expect("selection set after second double-click");
+        let (s, e) = sel.ordered();
+        assert_eq!(s, (0, 4));
+        assert_eq!(e, (0, 7));
     }
 }

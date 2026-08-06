@@ -1,10 +1,24 @@
 use crate::editor_vm::EditorViewModel;
-use drz_core::{build_alignment, diff_lines, Alignment, Hunk};
+use crate::types::LineStatus;
+use drz_core::{build_alignment, diff_lines, inline_diff_ranges, Alignment, Hunk};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Per-line change decoration derived from line hunks. Document-line indexed
+/// (`text.lines().count()` length, matching `diff_lines` semantics).
+#[derive(Debug, Default, Clone)]
+pub struct LineDecor {
+    pub status_left: Vec<LineStatus>,
+    pub status_right: Vec<LineStatus>,
+    pub inline_left: Vec<Option<Vec<(usize, usize)>>>,
+    pub inline_right: Vec<Option<Vec<(usize, usize)>>>,
+}
+
 const DEBOUNCE: Duration = Duration::from_millis(150);
+/// Per-pair line count above which inline char-diff is skipped (line bg still
+/// applied). Keeps large hunk recomputation cheap.
+const INLINE_HUNK_LINE_CAP: usize = 400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeDirection {
@@ -17,6 +31,8 @@ pub struct DiffViewModel {
     right: EditorViewModel,
     hunks: Vec<Hunk>,
     alignment: Alignment,
+    /// Per-line change decoration, document-line indexed.
+    line_decor: LineDecor,
     /// Set when a real edit is observed; the diff spawns once it has been
     /// stable for DEBOUNCE (burst debounce while typing).
     dirty_since: Option<Instant>,
@@ -24,8 +40,14 @@ pub struct DiffViewModel {
     /// scheduled only when a side's `edit_seq` advances past this.
     last_diffed: (u64, u64),
     in_flight: bool,
-    rx: Option<Receiver<(Vec<Hunk>, Alignment)>>,
+    rx: Option<Receiver<DiffResult>>,
     repaint: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+struct DiffResult {
+    hunks: Vec<Hunk>,
+    alignment: Alignment,
+    decor: LineDecor,
 }
 
 impl DiffViewModel {
@@ -39,6 +61,7 @@ impl DiffViewModel {
                 left: Vec::new(),
                 right: Vec::new(),
             },
+            line_decor: LineDecor::default(),
             // prime one initial diff on the first poll
             dirty_since: Some(Instant::now() - DEBOUNCE),
             last_diffed,
@@ -75,9 +98,10 @@ impl DiffViewModel {
         let mut updated = false;
         if let Some(rx) = &self.rx {
             match rx.try_recv() {
-                Ok((hunks, alignment)) => {
-                    self.hunks = hunks;
-                    self.alignment = alignment;
+                Ok(result) => {
+                    self.hunks = result.hunks;
+                    self.alignment = result.alignment;
+                    self.line_decor = result.decor;
                     self.in_flight = false;
                     self.rx = None;
                     updated = true;
@@ -115,7 +139,12 @@ impl DiffViewModel {
         std::thread::spawn(move || {
             let hunks = diff_lines(&old, &new);
             let alignment = build_alignment(&hunks, content_lines(&old), content_lines(&new));
-            let _ = tx.send((hunks, alignment));
+            let decor = build_line_status(&old, &new, &hunks);
+            let _ = tx.send(DiffResult {
+                hunks,
+                alignment,
+                decor,
+            });
         });
         self.rx = Some(rx);
     }
@@ -130,6 +159,7 @@ impl DiffViewModel {
         let new = self.right.document_text();
         self.hunks = diff_lines(&old, &new);
         self.alignment = build_alignment(&self.hunks, content_lines(&old), content_lines(&new));
+        self.line_decor = build_line_status(&old, &new, &self.hunks);
     }
 
     pub fn hunks(&self) -> &[Hunk] {
@@ -137,6 +167,18 @@ impl DiffViewModel {
     }
     pub fn alignment(&self) -> &Alignment {
         &self.alignment
+    }
+    pub fn line_status_left(&self) -> &[LineStatus] {
+        &self.line_decor.status_left
+    }
+    pub fn line_status_right(&self) -> &[LineStatus] {
+        &self.line_decor.status_right
+    }
+    pub fn inline_left(&self) -> &[Option<Vec<(usize, usize)>>] {
+        &self.line_decor.inline_left
+    }
+    pub fn inline_right(&self) -> &[Option<Vec<(usize, usize)>>] {
+        &self.line_decor.inline_right
     }
 
     /// Test probe: a recompute is scheduled or running.
@@ -163,6 +205,45 @@ impl DiffViewModel {
         }
         self.flush_diff_now();
     }
+
+    /// Summary counts derived from the current hunks / line-status slices.
+    /// Cheap: no recomputation, just sums over already-materialized fields.
+    pub fn stats(&self) -> DiffStats {
+        let added = self
+            .line_decor
+            .status_right
+            .iter()
+            .filter(|s| matches!(s, LineStatus::Added))
+            .count();
+        let removed = self
+            .line_decor
+            .status_left
+            .iter()
+            .filter(|s| matches!(s, LineStatus::Removed))
+            .count();
+        DiffStats {
+            hunks: self.hunks.len(),
+            added,
+            removed,
+        }
+    }
+
+    /// Swap left and right editors (text, dirty flag, path all carry over).
+    /// Hunks and decoration are invalidated; the next `poll()` recomputes.
+    pub fn swap_sides(&mut self) {
+        std::mem::swap(&mut self.left, &mut self.right);
+        self.dirty_since = Some(Instant::now() - DEBOUNCE);
+        self.in_flight = false;
+        self.rx = None;
+    }
+}
+
+/// Aggregate counts surfaced by the status bar.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DiffStats {
+    pub hunks: usize,
+    pub added: usize,
+    pub removed: usize,
 }
 
 /// Content-line count matching `diff_lines` semantics: ropey's trailing
@@ -171,7 +252,68 @@ fn content_lines(text: &str) -> usize {
     text.lines().count()
 }
 
+/// Per-side line status + inline marks derived from line hunks and the full
+/// document texts. Lines are content-line indexed (`text.lines().count()`,
+/// matching `diff_lines` / `content_lines` semantics); `status_*` length =
+/// `content_lines` of the respective side. `inline_*` length matches.
+///
+/// Pure insertions (`old_start == old_end`) and deletions (`new_start ==
+/// new_end`) carry no paired lines → no inline marks on the receiving side.
+fn build_line_status(old: &str, new: &str, hunks: &[Hunk]) -> LineDecor {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let mut status_left = vec![LineStatus::Unchanged; old_lines.len()];
+    let mut status_right = vec![LineStatus::Unchanged; new_lines.len()];
+    let mut inline_left: Vec<Option<Vec<(usize, usize)>>> = vec![None; old_lines.len()];
+    let mut inline_right: Vec<Option<Vec<(usize, usize)>>> = vec![None; new_lines.len()];
+
+    for h in hunks {
+        // mark backgrounds
+        for i in h.old_start..h.old_end {
+            if let Some(s) = status_left.get_mut(i) {
+                *s = LineStatus::Removed;
+            }
+        }
+        for i in h.new_start..h.new_end {
+            if let Some(s) = status_right.get_mut(i) {
+                *s = LineStatus::Added;
+            }
+        }
+        // inline marks only when both sides contribute lines
+        let old_len = h.old_end - h.old_start;
+        let new_len = h.new_end - h.new_start;
+        if old_len == 0 || new_len == 0 {
+            continue;
+        }
+        if old_len + new_len > INLINE_HUNK_LINE_CAP {
+            continue;
+        }
+        let pairs = old_len.min(new_len);
+        for k in 0..pairs {
+            let lo = h.old_start + k;
+            let ln = h.new_start + k;
+            let (l, r) = inline_diff_ranges(old_lines[lo], new_lines[ln]);
+            inline_left[lo] = Some(l);
+            inline_right[ln] = Some(r);
+        }
+    }
+    LineDecor {
+        status_left,
+        status_right,
+        inline_left,
+        inline_right,
+    }
+}
+
 fn build_block(vm: &EditorViewModel, start: usize, end: usize) -> String {
+    if start >= end {
+        return String::new();
+    }
+    // clamp end to current line count so a stale hunk (e.g. a merge arrow
+    // clicked before the background diff updated after an edit) can't panic
+    // by indexing past the new EOF.
+    let len = vm.len_lines();
+    let end = end.min(len);
     if start >= end {
         return String::new();
     }
@@ -180,7 +322,7 @@ fn build_block(vm: &EditorViewModel, start: usize, end: usize) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     // preserve trailing newline so following lines stay separate
-    if end < vm.len_lines() {
+    if end < len {
         s.push('\n');
     }
     s
@@ -189,6 +331,7 @@ fn build_block(vm: &EditorViewModel, start: usize, end: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::LineStatus::{Added, Removed, Unchanged};
     use drz_highlight::LanguageId;
 
     fn vm_pair() -> DiffViewModel {
@@ -343,12 +486,211 @@ mod tests {
         let mut vm = vm_pair();
         vm.flush_diff_now();
         // simulate a panicked diff thread: sender dropped, nothing sent
-        let (tx, rx) = channel::<(Vec<Hunk>, Alignment)>();
+        let (tx, rx) = channel::<DiffResult>();
         drop(tx);
         vm.rx = Some(rx);
         vm.in_flight = true;
         vm.poll();
         assert!(!vm.in_flight, "disconnected worker must clear in_flight");
         assert!(vm.rx.is_none());
+    }
+
+    fn statuses(vm: &DiffViewModel, side: Side) -> &[LineStatus] {
+        match side {
+            Side::Left => vm.line_status_left(),
+            Side::Right => vm.line_status_right(),
+        }
+    }
+    fn inlines(vm: &DiffViewModel, side: Side) -> &[Option<Vec<(usize, usize)>>] {
+        match side {
+            Side::Left => vm.inline_left(),
+            Side::Right => vm.inline_right(),
+        }
+    }
+    #[derive(Copy, Clone)]
+    enum Side {
+        Left,
+        Right,
+    }
+
+    #[test]
+    fn status_change_hunk_marks_added_removed_with_inline() {
+        // "a\nb\nc\n" vs "a\nX\nc\n": hunk {old: 1..2, new: 1..2} (single-line replace)
+        let mut vm = DiffViewModel::new(
+            EditorViewModel::from_text("a\nb\nc\n", LanguageId::PlainText),
+            EditorViewModel::from_text("a\nX\nc\n", LanguageId::PlainText),
+        );
+        vm.flush_diff_now();
+        // content lines: left=3, right=3
+        assert_eq!(statuses(&vm, Side::Left), &[Unchanged, Removed, Unchanged]);
+        assert_eq!(statuses(&vm, Side::Right), &[Unchanged, Added, Unchanged]);
+        // paired: 1 pair → inline present on both sides
+        let l1 = inlines(&vm, Side::Left).get(1).unwrap();
+        let r1 = inlines(&vm, Side::Right).get(1).unwrap();
+        assert!(
+            l1.is_some() && !l1.as_ref().unwrap().is_empty(),
+            "left line 1 should have inline char ranges (b vs X differ)"
+        );
+        assert!(r1.is_some());
+    }
+
+    #[test]
+    fn status_insert_only_no_inline() {
+        // "a\nc\n" vs "a\nb\nc\n": hunk {old: 1..1, new: 1..2} (pure insert)
+        let mut vm = DiffViewModel::new(
+            EditorViewModel::from_text("a\nc\n", LanguageId::PlainText),
+            EditorViewModel::from_text("a\nb\nc\n", LanguageId::PlainText),
+        );
+        vm.flush_diff_now();
+        assert_eq!(statuses(&vm, Side::Left), &[Unchanged, Unchanged]);
+        assert_eq!(statuses(&vm, Side::Right), &[Unchanged, Added, Unchanged]);
+        // no paired line on the right (new_len=1, old_len=0 → 0 pairs)
+        assert!(inlines(&vm, Side::Left).iter().all(|x| x.is_none()));
+        assert!(inlines(&vm, Side::Right).iter().all(|x| x.is_none()));
+    }
+
+    #[test]
+    fn status_delete_only_no_inline() {
+        // "a\nb\nc\n" vs "a\nc\n": hunk {old: 1..2, new: 1..1}
+        let mut vm = DiffViewModel::new(
+            EditorViewModel::from_text("a\nb\nc\n", LanguageId::PlainText),
+            EditorViewModel::from_text("a\nc\n", LanguageId::PlainText),
+        );
+        vm.flush_diff_now();
+        assert_eq!(statuses(&vm, Side::Left), &[Unchanged, Removed, Unchanged]);
+        assert_eq!(statuses(&vm, Side::Right), &[Unchanged, Unchanged]);
+        assert!(inlines(&vm, Side::Left).iter().all(|x| x.is_none()));
+        assert!(inlines(&vm, Side::Right).iter().all(|x| x.is_none()));
+    }
+
+    #[test]
+    fn status_cap_skips_inline_but_keeps_bg() {
+        // build a hunk with old_len+new_len > 400 lines: 250 + 250 = 500
+        let left_lines: Vec<String> = (0..250).map(|i| format!("L{i}\n")).collect();
+        let right_lines: Vec<String> = (0..250).map(|i| format!("R{i}\n")).collect();
+        let left_text = left_lines.join("");
+        let right_text = right_lines.join("");
+        let mut vm = DiffViewModel::new(
+            EditorViewModel::from_text(&left_text, LanguageId::PlainText),
+            EditorViewModel::from_text(&right_text, LanguageId::PlainText),
+        );
+        vm.flush_diff_now();
+        // there is exactly one big replace hunk {old: 0..250, new: 0..250}
+        assert_eq!(vm.hunks().len(), 1);
+        let h = &vm.hunks()[0];
+        assert_eq!((h.old_end - h.old_start) + (h.new_end - h.new_start), 500);
+        // backgrounds still applied
+        assert!(statuses(&vm, Side::Left).contains(&Removed));
+        assert!(statuses(&vm, Side::Right).contains(&Added));
+        // but inline marks skipped due to cap
+        for line in inlines(&vm, Side::Left)
+            .iter()
+            .chain(inlines(&vm, Side::Right))
+        {
+            assert!(
+                line.is_none(),
+                "inline must be skipped when hunk exceeds cap"
+            );
+        }
+    }
+
+    #[test]
+    fn status_unaffected_outside_hunks() {
+        let mut vm = DiffViewModel::new(
+            EditorViewModel::from_text("a\nb\nc\nd\ne\n", LanguageId::PlainText),
+            EditorViewModel::from_text("a\nX\nc\nd\nY\n", LanguageId::PlainText),
+        );
+        vm.flush_diff_now();
+        // hunks: {old:1..2, new:1..2} and {old:4..5, new:4..5}
+        // lines 0,2,3 untouched
+        assert_eq!(
+            statuses(&vm, Side::Left),
+            &[Unchanged, Removed, Unchanged, Unchanged, Removed]
+        );
+        assert_eq!(
+            statuses(&vm, Side::Right),
+            &[Unchanged, Added, Unchanged, Unchanged, Added]
+        );
+    }
+
+    /// Regression for the ropey panic from clicking the merge arrow while a
+    /// background diff is still in flight (stale hunks, doc already shrunk).
+    /// merge_chunk must clamp instead of panicking inside `Document::line`.
+    #[test]
+    fn merge_chunk_does_not_panic_on_stale_hunk() {
+        let l = EditorViewModel::from_text("a\nb\nc\n", LanguageId::PlainText);
+        let r = EditorViewModel::from_text("a\nb\nc\n", LanguageId::PlainText);
+        let mut vm = DiffViewModel::new(l, r);
+        // inject a stale hunk: pretend there is a diff at line 2..50
+        // (way past the doc's 3 lines).
+        vm.hunks = vec![Hunk {
+            old_start: 2,
+            old_end: 50,
+            new_start: 2,
+            new_end: 50,
+        }];
+        // must not panic
+        vm.merge_chunk(0, MergeDirection::LeftToRight);
+        // doc unchanged because the stale range was clamped to EOF
+        assert_eq!(vm.left().document_text(), "a\nb\nc\n");
+        assert_eq!(vm.right().document_text(), "a\nb\nc\n");
+    }
+
+    /// `Document::line` and `line_byte_range` must clamp instead of panicking
+    /// when called with out-of-bounds indices (regression for the ropey panic).
+    #[test]
+    fn document_api_clamps_oob_indices() {
+        let doc = drz_core::Document::from_text("a\nb\n");
+        assert_eq!(doc.line(99), "");
+        let eof = doc.to_string().len();
+        assert_eq!(doc.line_byte_range(99), (eof, eof));
+        // replace_lines past EOF is a no-op, not a panic
+        let mut doc = drz_core::Document::from_text("a\nb\n");
+        doc.replace_lines(99, 100, "X");
+        assert_eq!(doc.to_string(), "a\nb\n");
+    }
+
+    #[test]
+    fn stats_count_added_removed_and_hunks() {
+        // "a\nb\nc\n" vs "a\nX\nc\n": single hunk, 1 removed + 1 added.
+        let mut vm = DiffViewModel::new(
+            EditorViewModel::from_text("a\nb\nc\n", LanguageId::PlainText),
+            EditorViewModel::from_text("a\nX\nc\n", LanguageId::PlainText),
+        );
+        vm.flush_diff_now();
+        let s = vm.stats();
+        assert_eq!(s.hunks, 1);
+        assert_eq!(s.removed, 1);
+        assert_eq!(s.added, 1);
+    }
+
+    #[test]
+    fn swap_sides_swaps_text_and_path() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("drzvm_swap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let lp = dir.join("L.txt");
+        let rp = dir.join("R.txt");
+        std::fs::File::create(&lp)
+            .unwrap()
+            .write_all(b"left\n")
+            .unwrap();
+        std::fs::File::create(&rp)
+            .unwrap()
+            .write_all(b"right\n")
+            .unwrap();
+        let mut vm = DiffViewModel::new(
+            EditorViewModel::open(&lp).unwrap(),
+            EditorViewModel::open(&rp).unwrap(),
+        );
+        vm.flush_diff_now();
+        assert_eq!(vm.left().line(0), "left");
+        assert_eq!(vm.right().line(0), "right");
+        vm.swap_sides();
+        vm.flush_diff_now();
+        assert_eq!(vm.left().line(0), "right");
+        assert_eq!(vm.right().line(0), "left");
+        assert_eq!(vm.left().path().unwrap(), rp);
+        assert_eq!(vm.right().path().unwrap(), lp);
     }
 }

@@ -14,9 +14,16 @@ eframe.workspace = true
 egui.workspace = true
 clap.workspace = true
 rfd.workspace = true
+image.workspace = true
+resvg.workspace = true
+usvg.workspace = true
+tiny-skia.workspace = true
 drz-viewmodel = { path = "../drz-viewmodel" }
 drz-diff-ui = { path = "../drz-diff-ui" }
 
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource.workspace = true

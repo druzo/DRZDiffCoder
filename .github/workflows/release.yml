@@ -1,0 +1,62 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Override version (defaults to git tag)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build cross-platform artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            TAG="${GITHUB_REF_NAME#v}"
+            echo "value=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+          echo "VERSION=${{ steps.version.outputs.value }}" >> "$GITHUB_ENV"
+
+      - name: Install prereqs
+        run: sudo ./scripts/release/install-prereqs.sh
+
+      - name: Cache cargo target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./crates/drz-app -> target
+
+      - name: Run release pipeline
+        run: ./scripts/release.sh
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: drzdiff-${{ steps.version.outputs.value }}
+          path: releases/${{ steps.version.outputs.value }}/**/*
+          if-no-files-found: warn
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "DRZ Diff ${{ steps.version.outputs.value }}"
+          generate_release_notes: true
+          files: |
+            releases/${{ steps.version.outputs.value }}/**/*

@@ -8,3 +8,4 @@ edition = "2021"
 egui.workspace = true
 drz-viewmodel = { path = "../drz-viewmodel" }
 drz-editor = { path = "../drz-editor" }
+image.workspace = true

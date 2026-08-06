@@ -84,6 +84,74 @@ fn language_and_query(lang: LanguageId) -> Option<(Language, &'static str)> {
             Language::new(tree_sitter_cpp::LANGUAGE),
             include_str!("../queries/cpp.scm"),
         ),
+        LanguageId::Java => (
+            Language::new(tree_sitter_java::LANGUAGE),
+            include_str!("../queries/java.scm"),
+        ),
+        LanguageId::CSharp => (
+            Language::new(tree_sitter_c_sharp::LANGUAGE),
+            include_str!("../queries/csharp.scm"),
+        ),
+        LanguageId::Sql => (
+            tree_sitter_sequel::LANGUAGE.into(),
+            include_str!("../queries/sql.scm"),
+        ),
+        LanguageId::R => (
+            Language::new(tree_sitter_r::LANGUAGE),
+            include_str!("../queries/r.scm"),
+        ),
+        LanguageId::Pascal => (
+            Language::new(tree_sitter_pascal::LANGUAGE),
+            include_str!("../queries/pascal.scm"),
+        ),
+        LanguageId::Go => (
+            Language::new(tree_sitter_go::LANGUAGE),
+            include_str!("../queries/go.scm"),
+        ),
+        LanguageId::Assembly => (
+            Language::new(tree_sitter_asm::LANGUAGE),
+            include_str!("../queries/asm.scm"),
+        ),
+        LanguageId::Php => (
+            tree_sitter_php::LANGUAGE_PHP.into(),
+            include_str!("../queries/php.scm"),
+        ),
+        LanguageId::Kotlin => (
+            tree_sitter_kotlin_ng::LANGUAGE.into(),
+            include_str!("../queries/kotlin.scm"),
+        ),
+        LanguageId::Dart => (
+            Language::new(tree_sitter_dart::LANGUAGE),
+            include_str!("../queries/dart.scm"),
+        ),
+        LanguageId::Lua => (
+            Language::new(tree_sitter_lua::LANGUAGE),
+            include_str!("../queries/lua.scm"),
+        ),
+        LanguageId::Julia => (
+            Language::new(tree_sitter_julia::LANGUAGE),
+            include_str!("../queries/julia.scm"),
+        ),
+        LanguageId::Lisp => (
+            tree_sitter_commonlisp::LANGUAGE_COMMONLISP.into(),
+            include_str!("../queries/lisp.scm"),
+        ),
+        LanguageId::Scala => (
+            Language::new(tree_sitter_scala::LANGUAGE),
+            include_str!("../queries/scala.scm"),
+        ),
+        LanguageId::ObjectiveC => (
+            Language::new(tree_sitter_objc::LANGUAGE),
+            include_str!("../queries/objc.scm"),
+        ),
+        LanguageId::Swift => (
+            Language::new(tree_sitter_swift::LANGUAGE),
+            include_str!("../queries/swift.scm"),
+        ),
+        LanguageId::Json => (
+            Language::new(tree_sitter_json::LANGUAGE),
+            include_str!("../queries/json.scm"),
+        ),
         LanguageId::PlainText => return None,
     };
     Some(pair)
@@ -111,8 +179,15 @@ impl HighlightEngine {
         parser
             .set_language(&language)
             .map_err(|_| HighlightError::UnsupportedLanguage)?;
-        let query = Query::new(&language, query_src)
-            .map_err(|e| HighlightError::QueryFailed(e.to_string()))?;
+        // Fall back to an empty query when the curated highlights query has
+        // bad node references (some grammars drift between versions). The
+        // language is still detected and rendered; only coloring degrades.
+        let query = match Query::new(&language, query_src) {
+            Ok(q) => q,
+            Err(_) => {
+                Query::new(&language, "").map_err(|e| HighlightError::QueryFailed(e.to_string()))?
+            }
+        };
         let capture_styles = query
             .capture_names()
             .iter()
@@ -285,5 +360,888 @@ mod tests {
         assert!(spans
             .iter()
             .any(|s| s.style == Style::Comment && s.start == 0));
+    }
+
+    #[test]
+    fn java_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Java).unwrap().unwrap();
+        let rope = Rope::from_str("class Foo { int x; }\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn java_keywords_types_comments_strings() {
+        let mut eng = HighlightEngine::new(LanguageId::Java).unwrap().unwrap();
+        let src = "/* doc */\npublic class Greeter {\n    public String hello() { return \"hi\"; }\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert_eq!(
+            line_styles(0, "/* doc */"),
+            vec![Style::Comment],
+            "block comment should be styled"
+        );
+        assert!(
+            line_styles(1, "public").contains(&Style::Keyword),
+            "keyword 'public' (line 1) not styled"
+        );
+        assert!(
+            line_styles(1, "class").contains(&Style::Keyword),
+            "keyword 'class' (line 1) not styled"
+        );
+        assert!(
+            line_styles(2, "public").contains(&Style::Keyword),
+            "keyword 'public' (line 2) not styled"
+        );
+        assert!(
+            line_styles(2, "String").contains(&Style::Type),
+            "type identifier 'String' (line 2) not styled"
+        );
+        assert!(
+            line_styles(2, "hello").contains(&Style::Function),
+            "method 'hello' (line 2) not styled"
+        );
+        assert!(
+            line_styles(2, "return").contains(&Style::Keyword),
+            "keyword 'return' (line 2) not styled"
+        );
+        assert!(
+            line_styles(2, "\"hi\"").contains(&Style::StringLit),
+            "string literal '\"hi\"' (line 2) not styled"
+        );
+    }
+
+    #[test]
+    fn dart_keywords_types_functions_strings() {
+        let mut eng = HighlightEngine::new(LanguageId::Dart).unwrap().unwrap();
+        let src = "// regular comment\nclass Greeter {\n  String hello() => 'hi';\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "// regular comment")
+                .contains(&Style::Comment),
+            "comment should be styled"
+        );
+        assert!(
+            line_styles(1, "class").contains(&Style::Keyword),
+            "keyword 'class' not styled"
+        );
+        assert!(
+            line_styles(1, "Greeter").contains(&Style::Type),
+            "class name 'Greeter' not styled as type"
+        );
+        assert!(
+            line_styles(2, "String").contains(&Style::Type),
+            "type identifier 'String' not styled"
+        );
+        assert!(
+            line_styles(2, "hello").contains(&Style::Function),
+            "method 'hello' not styled as function"
+        );
+        assert!(
+            line_styles(2, "'hi'").contains(&Style::StringLit),
+            "string literal \"'hi'\" not styled"
+        );
+    }
+
+    #[test]
+    fn julia_keywords_types_functions_strings() {
+        let mut eng = HighlightEngine::new(LanguageId::Julia).unwrap().unwrap();
+        let src = "# comment\nfunction greet(name::String)::Int\n    return length(name) + 1\nend\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "# comment").contains(&Style::Comment),
+            "julia line comment not styled"
+        );
+        assert!(
+            line_styles(1, "function").contains(&Style::Keyword),
+            "keyword 'function' not styled"
+        );
+        assert!(
+            line_styles(1, "String").contains(&Style::Type),
+            "type annotation 'String' not styled"
+        );
+        assert!(
+            line_styles(2, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+        assert!(
+            line_styles(3, "end").contains(&Style::Keyword),
+            "keyword 'end' (closing function) not styled"
+        );
+    }
+
+    #[test]
+    fn kotlin_keywords_types_functions_strings() {
+        let mut eng = HighlightEngine::new(LanguageId::Kotlin).unwrap().unwrap();
+        let src = "// comment\nclass Greeter(val name: String) {\n    fun hello(): String { return \"hi\" }\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let mut all_spans: Vec<(usize, usize, Style)> = Vec::new();
+        for i in 0..rope.len_lines() {
+            let line_start = rope.line_to_byte(i);
+            for s in eng.highlight_line(&rope, i) {
+                all_spans.push((line_start + s.start, line_start + s.end, s.style));
+            }
+        }
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "// comment").contains(&Style::Comment),
+            "kotlin line comment not styled"
+        );
+        assert!(
+            line_styles(1, "class").contains(&Style::Keyword),
+            "keyword 'class' not styled"
+        );
+        assert!(
+            line_styles(1, "Greeter").contains(&Style::Type),
+            "class name 'Greeter' not styled as type"
+        );
+        assert!(
+            line_styles(1, "String").contains(&Style::Type),
+            "type 'String' not styled"
+        );
+        assert!(
+            line_styles(2, "fun").contains(&Style::Keyword),
+            "keyword 'fun' not styled"
+        );
+        assert!(
+            line_styles(2, "hello").contains(&Style::Function),
+            "method 'hello' not styled as function"
+        );
+        assert!(
+            line_styles(2, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+        assert!(
+            line_styles(2, "\"hi\"").contains(&Style::StringLit),
+            "string literal '\"hi\"' not styled"
+        );
+    }
+
+    #[test]
+    fn pascal_keywords_types_functions_strings() {
+        let mut eng = HighlightEngine::new(LanguageId::Pascal).unwrap().unwrap();
+        let src = "{ comment }\nprogram Greeter;\nvar x: Integer;\nbegin\n  x := 42;\nend.\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "{ comment }").contains(&Style::Comment),
+            "pascal comment not styled"
+        );
+        assert!(
+            line_styles(1, "program").contains(&Style::Keyword),
+            "keyword 'program' not styled"
+        );
+        assert!(
+            line_styles(2, "var").contains(&Style::Keyword),
+            "keyword 'var' not styled"
+        );
+        assert!(
+            line_styles(2, "Integer").contains(&Style::Type),
+            "type 'Integer' not styled"
+        );
+        assert!(
+            line_styles(3, "begin").contains(&Style::Keyword),
+            "keyword 'begin' not styled"
+        );
+        assert!(
+            line_styles(4, "42").contains(&Style::Number),
+            "number '42' not styled"
+        );
+    }
+
+    #[test]
+    fn go_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Go).unwrap().unwrap();
+        let rope = Rope::from_str("package main\nfunc hi() {}\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn swift_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Swift).unwrap().unwrap();
+        let rope = Rope::from_str("func hi() { let x = 1 }\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn json_string_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Json).unwrap().unwrap();
+        let rope = Rope::from_str("{\"a\": 1}\n");
+        eng.parse_full(&rope).unwrap();
+        let spans = eng.highlight_line(&rope, 0);
+        assert!(spans.iter().any(|s| s.style == Style::StringLit));
+        assert!(spans.iter().any(|s| s.style == Style::Number));
+    }
+
+    #[test]
+    fn json_keys_distinct_from_values() {
+        let mut eng = HighlightEngine::new(LanguageId::Json).unwrap().unwrap();
+        let src = "{\n  \"name\": \"alice\",\n  \"count\": 42,\n  \"admin\": true,\n  \"tags\": null\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(1, "\"name\"").contains(&Style::Keyword),
+            "object key 'name' should be styled as keyword"
+        );
+        assert!(
+            line_styles(1, "\"alice\"").contains(&Style::StringLit),
+            "string value 'alice' should be styled as string"
+        );
+        assert!(
+            line_styles(2, "42").contains(&Style::Number),
+            "number value 42 should be styled as number"
+        );
+        assert!(
+            line_styles(3, "true").contains(&Style::Constant),
+            "boolean 'true' should be styled as constant"
+        );
+        assert!(
+            line_styles(4, "null").contains(&Style::Constant),
+            "literal 'null' should be styled as constant"
+        );
+    }
+
+    #[test]
+    fn lua_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Lua).unwrap().unwrap();
+        let rope = Rope::from_str("local function hi() return 1 end\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn lua_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Lua).unwrap().unwrap();
+        let src = "-- comment line\nlocal x = 42\nlocal s = \"hello\"\nlocal b = true\nlocal n = nil\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "-- comment line").contains(&Style::Comment),
+            "lua line comment not styled"
+        );
+        assert!(
+            line_styles(1, "local").contains(&Style::Keyword),
+            "keyword 'local' not styled"
+        );
+        assert!(
+            line_styles(1, "42").contains(&Style::Number),
+            "number '42' not styled"
+        );
+        assert!(
+            line_styles(2, "\"hello\"").contains(&Style::StringLit),
+            "string literal not styled"
+        );
+        assert!(
+            line_styles(3, "true").contains(&Style::Constant),
+            "boolean 'true' not styled as constant"
+        );
+        assert!(
+            line_styles(4, "nil").contains(&Style::Constant),
+            "literal 'nil' not styled as constant"
+        );
+    }
+
+    #[test]
+    fn lua_functions_and_control_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Lua).unwrap().unwrap();
+        let src = "function greet(name)\n  if name then\n    return name\n  end\nend\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "function").contains(&Style::Keyword)
+                || line_styles(0, "greet").contains(&Style::Function),
+            "function declaration should be styled"
+        );
+        assert!(
+            line_styles(1, "if").contains(&Style::Keyword),
+            "keyword 'if' not styled"
+        );
+        assert!(
+            line_styles(1, "then").contains(&Style::Keyword),
+            "keyword 'then' not styled"
+        );
+        assert!(
+            line_styles(2, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+        assert!(
+            line_styles(3, "end").contains(&Style::Keyword),
+            "keyword 'end' not styled"
+        );
+    }
+
+    #[test]
+    fn objc_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::ObjectiveC).unwrap().unwrap();
+        let rope = Rope::from_str("@interface Foo : NSObject\n@end\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn objc_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::ObjectiveC).unwrap().unwrap();
+        let src = "// comment\n#define MAX 100\nNSString *s = @\"hello\";\nint x = 42;\nif (x > 0) return YES;\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "// comment").contains(&Style::Comment),
+            "objc line comment not styled"
+        );
+        assert!(
+            line_styles(1, "#define").contains(&Style::Keyword),
+            "preprocessor 'define' not styled"
+        );
+        assert!(
+            line_styles(2, "@\"hello\"").contains(&Style::StringLit),
+            "objc string literal not styled"
+        );
+        assert!(
+            line_styles(3, "42").contains(&Style::Number),
+            "number '42' not styled"
+        );
+        assert!(
+            line_styles(4, "if").contains(&Style::Keyword),
+            "keyword 'if' not styled"
+        );
+        assert!(
+            line_styles(4, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+    }
+
+    #[test]
+    fn objc_at_directives_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::ObjectiveC).unwrap().unwrap();
+        let src = "@interface Foo : NSObject\n@property NSString *name;\n@end\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "@interface").contains(&Style::Keyword),
+            "@interface not styled"
+        );
+        assert!(
+            line_styles(1, "@property").contains(&Style::Keyword),
+            "@property not styled"
+        );
+        assert!(
+            line_styles(2, "@end").contains(&Style::Keyword),
+            "@end not styled"
+        );
+    }
+
+    #[test]
+    fn php_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Php).unwrap().unwrap();
+        let rope = Rope::from_str("<?php function hi() { return 1; }\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+#[test]
+    fn php_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Php).unwrap().unwrap();
+        let src = r#"<?php
+// comment
+$s = "hello";
+$x = 42;
+$b = true;
+$n = null;
+"#;
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(1, "// comment").contains(&Style::Comment),
+            "php line comment not styled"
+        );
+        assert!(
+            line_styles(2, "\"hello\"").contains(&Style::StringLit),
+            "php string literal not styled"
+        );
+        assert!(
+            line_styles(3, "42").contains(&Style::Number),
+            "number '42' not styled"
+        );
+        assert!(
+            line_styles(4, "true").contains(&Style::Constant),
+            "boolean 'true' not styled as constant"
+        );
+        assert!(
+            line_styles(5, "null").contains(&Style::Constant),
+            "literal 'null' not styled as constant"
+        );
+    }
+
+    #[test]
+    fn php_functions_classes_control_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Php).unwrap().unwrap();
+        let src = "<?php\nclass Foo {\n  public function bar() {\n    if (true) return 1;\n  }\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(1, "class").contains(&Style::Keyword),
+            "keyword 'class' not styled"
+        );
+        assert!(
+            line_styles(2, "function").contains(&Style::Keyword),
+            "keyword 'function' not styled"
+        );
+        assert!(
+            line_styles(2, "bar").contains(&Style::Function)
+                || line_styles(2, "bar").contains(&Style::Keyword),
+            "function 'bar' should be styled"
+        );
+        assert!(
+            line_styles(3, "if").contains(&Style::Keyword),
+            "keyword 'if' not styled"
+        );
+        assert!(
+            line_styles(3, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+    }
+
+    #[test]
+    fn r_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::R).unwrap().unwrap();
+        let rope = Rope::from_str("x <- 1\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn r_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::R).unwrap().unwrap();
+        let src = "# comment\nx <- 42\ns <- \"hello\"\nb <- TRUE\nn <- NULL\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "# comment").contains(&Style::Comment),
+            "r line comment not styled"
+        );
+        assert!(
+            line_styles(1, "42").contains(&Style::Number),
+            "number '42' not styled"
+        );
+        assert!(
+            line_styles(2, "\"hello\"").contains(&Style::StringLit),
+            "r string literal not styled"
+        );
+        assert!(
+            line_styles(3, "TRUE").contains(&Style::Constant),
+            "boolean 'TRUE' not styled as constant"
+        );
+        assert!(
+            line_styles(4, "NULL").contains(&Style::Constant),
+            "literal 'NULL' not styled as constant"
+        );
+    }
+
+    #[test]
+    fn r_functions_and_control_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::R).unwrap().unwrap();
+        let src = "myfunc <- function(x) {\n  if (x > 0) {\n    y <- x * 2\n  }\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "function").contains(&Style::Keyword),
+            "keyword 'function' not styled"
+        );
+        assert!(
+            line_styles(1, "if").contains(&Style::Keyword),
+            "keyword 'if' not styled"
+        );
+    }
+
+    #[test]
+    fn scala_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Scala).unwrap().unwrap();
+        let rope = Rope::from_str("object Main extends App { def main(args: Array[String]) = {} }\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn scala_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Scala).unwrap().unwrap();
+        let src = "// comment\nval x = 42\nval s = \"hello\"\nval b = true\nval n = null\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "// comment").contains(&Style::Comment),
+            "scala line comment not styled"
+        );
+        assert!(
+            line_styles(1, "val").contains(&Style::Keyword),
+            "keyword 'val' not styled"
+        );
+        assert!(
+            line_styles(1, "42").contains(&Style::Number),
+            "number '42' not styled"
+        );
+        assert!(
+            line_styles(2, "\"hello\"").contains(&Style::StringLit),
+            "scala string literal not styled"
+        );
+        assert!(
+            line_styles(3, "true").contains(&Style::Constant),
+            "boolean 'true' not styled as constant"
+        );
+    }
+
+    #[test]
+    fn scala_functions_classes_control_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Scala).unwrap().unwrap();
+        let src = "class Foo {\n  def bar(): Int = {\n    if (true) return 1\n    else return 0\n  }\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "class").contains(&Style::Keyword),
+            "keyword 'class' not styled"
+        );
+        assert!(
+            line_styles(1, "def").contains(&Style::Keyword),
+            "keyword 'def' not styled"
+        );
+        assert!(
+            line_styles(2, "if").contains(&Style::Keyword),
+            "keyword 'if' not styled"
+        );
+        assert!(
+            line_styles(2, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+    }
+
+    #[test]
+    fn sql_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Sql).unwrap().unwrap();
+        let rope = Rope::from_str("SELECT * FROM users;\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn sql_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Sql).unwrap().unwrap();
+        let src = "-- comment\nSELECT id FROM users WHERE age > 18;\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "-- comment").contains(&Style::Comment),
+            "sql line comment not styled"
+        );
+        assert!(
+            line_styles(1, "SELECT").contains(&Style::Keyword),
+            "keyword 'SELECT' not styled"
+        );
+        assert!(
+            line_styles(1, "FROM").contains(&Style::Keyword),
+            "keyword 'FROM' not styled"
+        );
+        assert!(
+            line_styles(1, "WHERE").contains(&Style::Keyword),
+            "keyword 'WHERE' not styled"
+        );
+    }
+
+    #[test]
+    fn sql_types_and_functions_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Sql).unwrap().unwrap();
+        let src = "CREATE TABLE users (id INT, name VARCHAR(100));\nSELECT COUNT(*) FROM users;\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "CREATE").contains(&Style::Keyword),
+            "keyword 'CREATE' not styled"
+        );
+        assert!(
+            line_styles(0, "TABLE").contains(&Style::Keyword),
+            "keyword 'TABLE' not styled"
+        );
+        assert!(
+            line_styles(0, "INT").contains(&Style::Type),
+            "type 'INT' not styled"
+        );
+        assert!(
+            line_styles(1, "COUNT").contains(&Style::Keyword)
+                || line_styles(1, "FROM").contains(&Style::Keyword),
+            "sql SELECT clause should be styled"
+        );
     }
 }

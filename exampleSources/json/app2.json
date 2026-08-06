@@ -1,0 +1,26 @@
+[
+  {
+    "name": "rust",
+    "extensions": ["rs"],
+    "tree_sitter": "tree-sitter-rust",
+    "icon": "icons/lang/rust.svg"
+  },
+  {
+    "name": "python",
+    "extensions": ["py", "pyi"],
+    "tree_sitter": "tree-sitter-python",
+    "icon": "icons/lang/python.svg"
+  },
+  {
+    "name": "javascript",
+    "extensions": ["js", "mjs", "cjs", "jsx"],
+    "tree_sitter": "tree-sitter-javascript",
+    "icon": "icons/lang/javascript.svg"
+  },
+  {
+    "name": "go",
+    "extensions": ["go"],
+    "tree_sitter": "tree-sitter-go",
+    "icon": "icons/lang/go.svg"
+  }
+]

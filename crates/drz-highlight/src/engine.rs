@@ -695,4 +695,103 @@ mod tests {
             "literal 'null' should be styled as constant"
         );
     }
+
+    #[test]
+    fn lua_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Lua).unwrap().unwrap();
+        let rope = Rope::from_str("local function hi() return 1 end\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn lua_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Lua).unwrap().unwrap();
+        let src = "-- comment line\nlocal x = 42\nlocal s = \"hello\"\nlocal b = true\nlocal n = nil\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "-- comment line").contains(&Style::Comment),
+            "lua line comment not styled"
+        );
+        assert!(
+            line_styles(1, "local").contains(&Style::Keyword),
+            "keyword 'local' not styled"
+        );
+        assert!(
+            line_styles(1, "42").contains(&Style::Number),
+            "number '42' not styled"
+        );
+        assert!(
+            line_styles(2, "\"hello\"").contains(&Style::StringLit),
+            "string literal not styled"
+        );
+        assert!(
+            line_styles(3, "true").contains(&Style::Constant),
+            "boolean 'true' not styled as constant"
+        );
+        assert!(
+            line_styles(4, "nil").contains(&Style::Constant),
+            "literal 'nil' not styled as constant"
+        );
+    }
+
+    #[test]
+    fn lua_functions_and_control_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Lua).unwrap().unwrap();
+        let src = "function greet(name)\n  if name then\n    return name\n  end\nend\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "function").contains(&Style::Keyword)
+                || line_styles(0, "greet").contains(&Style::Function),
+            "function declaration should be styled"
+        );
+        assert!(
+            line_styles(1, "if").contains(&Style::Keyword),
+            "keyword 'if' not styled"
+        );
+        assert!(
+            line_styles(1, "then").contains(&Style::Keyword),
+            "keyword 'then' not styled"
+        );
+        assert!(
+            line_styles(2, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+        assert!(
+            line_styles(3, "end").contains(&Style::Keyword),
+            "keyword 'end' not styled"
+        );
+    }
 }

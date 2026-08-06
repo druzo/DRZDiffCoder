@@ -78,6 +78,7 @@ impl DiffView {
         let mut left_ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(left_rect)
+                .id_salt("diff_left_pane")
                 .layout(egui::Layout::left_to_right(egui::Align::LEFT).with_main_wrap(false)),
         );
         self.left_editor.show_rows(
@@ -92,6 +93,7 @@ impl DiffView {
         let mut right_ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(right_rect)
+                .id_salt("diff_right_pane")
                 .layout(egui::Layout::left_to_right(egui::Align::LEFT).with_main_wrap(false)),
         );
         self.right_editor.show_rows(

@@ -546,4 +546,47 @@ mod tests {
         assert!(spans.iter().any(|s| s.style == Style::StringLit));
         assert!(spans.iter().any(|s| s.style == Style::Number));
     }
+
+    #[test]
+    fn json_keys_distinct_from_values() {
+        let mut eng = HighlightEngine::new(LanguageId::Json).unwrap().unwrap();
+        let src = "{\n  \"name\": \"alice\",\n  \"count\": 42,\n  \"admin\": true,\n  \"tags\": null\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(1, "\"name\"").contains(&Style::Keyword),
+            "object key 'name' should be styled as keyword"
+        );
+        assert!(
+            line_styles(1, "\"alice\"").contains(&Style::StringLit),
+            "string value 'alice' should be styled as string"
+        );
+        assert!(
+            line_styles(2, "42").contains(&Style::Number),
+            "number value 42 should be styled as number"
+        );
+        assert!(
+            line_styles(3, "true").contains(&Style::Constant),
+            "boolean 'true' should be styled as constant"
+        );
+        assert!(
+            line_styles(4, "null").contains(&Style::Constant),
+            "literal 'null' should be styled as constant"
+        );
+    }
 }

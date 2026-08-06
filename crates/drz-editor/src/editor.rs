@@ -28,6 +28,11 @@ pub struct CodeEditor {
     /// Timestamp + line of the most recent double-click, used to detect
     /// triple-click within 300 ms on the same line.
     last_double_click: Option<(std::time::Instant, usize)>,
+    /// Last clipboard text captured from `egui::Event::Paste`. egui 0.31 has
+    /// no synchronous clipboard read API, so the context menu uses this as
+    /// the source for its Paste action. Populated whenever the user pastes
+    /// while focus is in this editor; cleared when the menu consumes it.
+    paste_text: Option<String>,
     icons: EditorIcons,
 }
 
@@ -38,6 +43,7 @@ impl CodeEditor {
             selection: None,
             drag_anchor: None,
             last_double_click: None,
+            paste_text: None,
             icons: EditorIcons::new(),
         }
     }
@@ -198,6 +204,77 @@ impl CodeEditor {
                     self.handle_keys(ui, vm);
                 }
 
+                // Right-click context menu.
+                let has_sel = self.selection.map(|s| s.is_selected()).unwrap_or(false);
+                let clipboard_has_text = self.paste_text.is_some();
+                response.context_menu(|ui| {
+                    let copy_label = if let Some(t) = self.icons.copy() {
+                        egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Copy")
+                    } else {
+                        egui::Button::new("Copy")
+                    };
+                    let cut_label = if let Some(t) = self.icons.cut() {
+                        egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Cut")
+                    } else {
+                        egui::Button::new("Cut")
+                    };
+                    let paste_label = if let Some(t) = self.icons.paste() {
+                        egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Paste")
+                    } else {
+                        egui::Button::new("Paste")
+                    };
+                    if ui.add_enabled(has_sel, copy_label).clicked() {
+                        if let Some(sel) = self.selection {
+                            let (s, e) = sel.ordered();
+                            if s != e {
+                                ui.ctx().copy_text(vm.text_in_range(s, e));
+                            }
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(has_sel, cut_label).clicked() {
+                        if let Some(sel) = self.selection {
+                            let (s, e) = sel.ordered();
+                            if s != e {
+                                let text = vm.text_in_range(s, e);
+                                ui.ctx().copy_text(text);
+                                let (nl, nc) = vm.replace_selection_with(s, e, "");
+                                let _ = (nl, nc);
+                                self.cursor = s;
+                                self.selection = None;
+                            }
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(clipboard_has_text, paste_label).clicked() {
+                        if let Some(text) = self.paste_text.take() {
+                            if !text.is_empty() {
+                                let (s, e) = match self.selection {
+                                    Some(sel) => sel.ordered(),
+                                    None => (self.cursor, self.cursor),
+                                };
+                                let (nl, nc) = vm.replace_selection_with(s, e, &text);
+                                self.cursor = (nl, nc);
+                                self.selection = None;
+                            }
+                        }
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Select All").clicked() {
+                        let last = vm.len_lines().saturating_sub(1);
+                        let last_len = if last < vm.len_lines() {
+                            vm.line(last).len()
+                        } else {
+                            0
+                        };
+                        self.selection =
+                            Some(drz_viewmodel::Selection::new((0, 0), (last, last_len)));
+                        self.cursor = (last, last_len);
+                        ui.close_menu();
+                    }
+                });
+
                 let focused = response.has_focus();
                 let painter = ui.painter_at(rect);
                 // Gutter background (subtle, separates from the code area).
@@ -342,6 +419,7 @@ impl CodeEditor {
                     }
                     egui::Event::Paste(s) => {
                         paste_text = Some(s.clone());
+                        self.paste_text = Some(s.clone());
                     }
                     egui::Event::Copy => {
                         copy_request = self.selection.and_then(|sel| {

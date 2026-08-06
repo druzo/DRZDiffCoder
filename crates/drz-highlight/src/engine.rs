@@ -884,4 +884,105 @@ mod tests {
             "@end not styled"
         );
     }
+
+    #[test]
+    fn php_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Php).unwrap().unwrap();
+        let rope = Rope::from_str("<?php function hi() { return 1; }\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+#[test]
+    fn php_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Php).unwrap().unwrap();
+        let src = r#"<?php
+// comment
+$s = "hello";
+$x = 42;
+$b = true;
+$n = null;
+"#;
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(1, "// comment").contains(&Style::Comment),
+            "php line comment not styled"
+        );
+        assert!(
+            line_styles(2, "\"hello\"").contains(&Style::StringLit),
+            "php string literal not styled"
+        );
+        assert!(
+            line_styles(3, "42").contains(&Style::Number),
+            "number '42' not styled"
+        );
+        assert!(
+            line_styles(4, "true").contains(&Style::Constant),
+            "boolean 'true' not styled as constant"
+        );
+        assert!(
+            line_styles(5, "null").contains(&Style::Constant),
+            "literal 'null' not styled as constant"
+        );
+    }
+
+    #[test]
+    fn php_functions_classes_control_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Php).unwrap().unwrap();
+        let src = "<?php\nclass Foo {\n  public function bar() {\n    if (true) return 1;\n  }\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(1, "class").contains(&Style::Keyword),
+            "keyword 'class' not styled"
+        );
+        assert!(
+            line_styles(2, "function").contains(&Style::Keyword),
+            "keyword 'function' not styled"
+        );
+        assert!(
+            line_styles(2, "bar").contains(&Style::Function)
+                || line_styles(2, "bar").contains(&Style::Keyword),
+            "function 'bar' should be styled"
+        );
+        assert!(
+            line_styles(3, "if").contains(&Style::Keyword),
+            "keyword 'if' not styled"
+        );
+        assert!(
+            line_styles(3, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+    }
 }

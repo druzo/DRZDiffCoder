@@ -159,6 +159,12 @@ impl DiffView {
             &mut self.right_decors,
         );
 
+        // Shared scroll target: whichever editor moves its cursor out of
+        // view (PageUp/Down, arrow keys, etc.) writes the pixel offset
+        // here. Both editors then adopt the same scroll, so the diff
+        // panes stay synced.
+        let mut scroll_target: Option<f32> = None;
+
         let mut left_ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(left_rect)
@@ -172,6 +178,7 @@ impl DiffView {
             total_rows,
             &mut self.scroll,
             Some(&self.left_decors),
+            &mut scroll_target,
         );
 
         let mut right_ui = ui.new_child(
@@ -187,6 +194,7 @@ impl DiffView {
             total_rows,
             &mut self.scroll,
             Some(&self.right_decors),
+            &mut scroll_target,
         );
     }
 }

@@ -122,6 +122,7 @@ impl CodeEditor {
         total_rows: usize,
         scroll: &mut egui::Vec2,
         row_decor: Option<&dyn Fn(usize) -> Option<RowDecor>>,
+        scroll_target: &mut Option<f32>,
     ) {
         let font_id = egui::FontId::monospace(15.0);
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
@@ -144,26 +145,34 @@ impl CodeEditor {
             vm.len_lines()
         };
 
-        let scroll_target_line: std::rc::Rc<std::cell::RefCell<Option<usize>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(None));
         let output = egui::ScrollArea::both()
             .auto_shrink([false, false])
             .id_salt(ui.id().with("editor_scroll"))
             .scroll_offset(*scroll)
             .show(ui, |ui| {
-                let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2(
-                        gutter_width + char_width * max_line_cols(vm) as f32 + 40.0,
-                        row_height * rows as f32,
-                    ),
-                    egui::Sense::click_and_drag(),
-                );
+                // Stable response ID: wrap the editor allocation in a
+                // push_id so the Response.id is deterministic frame-to-frame
+                // regardless of whether scroll bars are visible. Without
+                // this, `next_auto_id_salt` drifts when the scroll bar
+                // appears/disappears, breaking the focus-lock filter and
+                // triggering egui's dead-mans-switch focus surrender.
+                let inner = ui.push_id(egui::Id::new("editor_main"), |ui| {
+                    ui.allocate_exact_size(
+                        egui::vec2(
+                            gutter_width + char_width * max_line_cols(vm) as f32 + 40.0,
+                            row_height * rows as f32,
+                        ),
+                        egui::Sense::click_and_drag(),
+                    )
+                });
+                let (rect, response) = inner.inner;
                 let visible = ui.clip_rect();
                 let first_row =
                     ((visible.top() - rect.top()) / row_height).floor().max(0.0) as usize;
                 let last_row =
                     (((visible.bottom() - rect.top()) / row_height).ceil() as usize).min(rows);
-                let visible_rows = last_row.saturating_sub(first_row).max(1);
+                let visible_first = first_row;
+                let visible_last = last_row;
 
                 // Mouse interaction: click, drag, double-click, triple-click.
                 self.icons.ensure_textures(ui.ctx());
@@ -264,7 +273,14 @@ impl CodeEditor {
                 }
 
                 if response.has_focus() {
-                    self.handle_keys(ui, vm, &scroll_target_line, visible_rows, row_height);
+                    self.handle_keys(
+                        ui,
+                        vm,
+                        scroll_target,
+                        visible_first,
+                        visible_last,
+                        row_height,
+                    );
                 }
 
                 // Right-click context menu.
@@ -508,13 +524,14 @@ impl CodeEditor {
                     ui.ctx().request_repaint();
                 }
             });
-        // handle_keys may have requested that a specific line be scrolled
-        // into view (PageUp / PageDown). Apply it before reading the final
-        // offset from ScrollArea. Scope the borrow so the `Ref` temp drops
-        // before `scroll_target_line` is dropped at function end.
-        let target_line: Option<usize> = *scroll_target_line.borrow();
-        if let Some(line) = target_line {
-            *scroll = egui::vec2(scroll.x, (line as f32 * row_height).max(0.0));
+        // handle_keys may have requested that the viewport scroll to a
+        // specific pixel offset (PageUp / PageDown / auto-scroll). Apply
+        // it before reading ScrollArea's final offset so the two panes
+        // stay in sync. The DiffView passes a SHARED scroll_target so the
+        // right editor sees the left editor's request — neither side can
+        // silently overwrite the other.
+        if let Some(target_y) = *scroll_target {
+            *scroll = egui::vec2(scroll.x, target_y.max(0.0));
         } else {
             *scroll = output.state.offset;
         }
@@ -531,6 +548,7 @@ impl CodeEditor {
         total_rows: usize,
         scroll: &mut egui::Vec2,
         decors: Option<&[RowDecor]>,
+        scroll_target: &mut Option<f32>,
     ) {
         let decors_vec: Option<Vec<RowDecor>> = decors.map(|d| d.to_vec());
         let decor_fn: Option<Box<dyn Fn(usize) -> Option<RowDecor>>> = decors_vec.map(|d| {
@@ -544,6 +562,7 @@ impl CodeEditor {
             total_rows,
             scroll,
             decor_fn.as_deref(),
+            scroll_target,
         );
     }
 
@@ -551,22 +570,36 @@ impl CodeEditor {
         &mut self,
         ui: &mut egui::Ui,
         vm: &mut EditorViewModel,
-        scroll_target_line: &std::rc::Rc<std::cell::RefCell<Option<usize>>>,
-        visible_rows: usize,
-        _row_height: f32,
+        scroll_target: &mut Option<f32>,
+        visible_first: usize,
+        visible_last: usize,
+        row_height: f32,
     ) {
         use drz_viewmodel::Selection;
-        let (line, col) = self.cursor;
-        let col = if line < vm.len_lines() {
-            floor_col_boundary(&vm.line(line), col)
-        } else {
-            col
-        };
-        self.cursor.1 = col;
+
+        // Clone events up front so we can mutate `self` between iterations.
+        // The previous version captured `line`/`col` ONCE at the top and
+        // reused stale values across multiple events in the same frame
+        // (auto-repeat, key chords), which corrupted typing / backspace
+        // state.
+        let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
         let mods = ui.ctx().input(|i| i.modifiers);
         let cmd_or_ctrl = mods.command;
         let shift = mods.shift;
 
+        // Mutable cursor state, kept in sync with `self.cursor` after each
+        // event. Per-event re-floor so multi-byte columns don't drift.
+        let mut line = self.cursor.0;
+        let mut col = if line < vm.len_lines() {
+            floor_col_boundary(&vm.line(line), self.cursor.1)
+        } else {
+            self.cursor.1
+        };
+        self.cursor = (line, col);
+
+        // Deferred OS-level actions: clipboard events fire from the OS layer
+        // in any order and need to run after the event loop so we don't
+        // borrow `vm` while inside the closure.
         let mut paste_text: Option<String> = None;
         let mut copy_request: Option<String> = None;
         let mut cut_request: Option<((usize, usize), (usize, usize))> = None;
@@ -574,295 +607,249 @@ impl CodeEditor {
         let mut undo_request = false;
         let mut redo_request = false;
 
-        ui.input(|i| {
-            for event in &i.events {
-                match event {
-                    egui::Event::Text(t) if !self.do_selection_replace(t, vm) => {
-                        let caret = self.cursor;
-                        vm.edit_with_caret(
-                            byte_of(vm, line) + col,
-                            byte_of(vm, line) + col,
-                            t,
-                            Some(caret),
-                        );
-                        self.cursor.1 += t.len();
-                        self.cursor.0 = self.cursor.0.min(vm.len_lines().saturating_sub(1));
+        for event in &events {
+            match event {
+                egui::Event::Text(t) => {
+                    apply_text_insert(vm, t, &mut line, &mut col, &mut self.selection);
+                    if line < vm.len_lines() {
+                        col = floor_col_boundary(&vm.line(line), col);
                     }
-                    egui::Event::Paste(s) => {
-                        paste_text = Some(s.clone());
-                        self.paste_text = Some(s.clone());
-                    }
-                    egui::Event::Copy => {
-                        copy_request = self.selection.and_then(|sel| {
-                            let (s, e) = sel.ordered();
-                            if s == e {
-                                None
-                            } else {
-                                Some(vm.text_in_range(s, e))
-                            }
-                        });
-                    }
-                    egui::Event::Cut => {
-                        cut_request = self.selection.and_then(|sel| {
-                            let (s, e) = sel.ordered();
-                            if s == e {
-                                None
-                            } else {
-                                Some((s, e))
-                            }
-                        });
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::Z,
-                        pressed: true,
-                        ..
-                    } if cmd_or_ctrl => {
-                        if shift {
-                            redo_request = true;
-                        } else {
-                            undo_request = true;
-                        }
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::Y,
-                        pressed: true,
-                        ..
-                    } if cmd_or_ctrl && !shift => {
-                        redo_request = true;
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::A,
-                        pressed: true,
-                        ..
-                    } if cmd_or_ctrl => {
-                        select_all_request = true;
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::Enter,
-                        pressed: true,
-                        ..
-                    } if !self.do_selection_replace("\n", vm) => {
-                        let caret = self.cursor;
-                        vm.edit_with_caret(
-                            byte_of(vm, line) + col,
-                            byte_of(vm, line) + col,
-                            "\n",
-                            Some(caret),
-                        );
-                        self.cursor = (line + 1, 0);
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::Backspace,
-                        pressed: true,
-                        ..
-                    } => {
-                        if let Some(sel) = self.selection.take() {
-                            let (s, e) = sel.ordered();
-                            let (nl, nc) = vm.replace_selection_with(s, e, "");
-                            self.cursor = (nl, nc);
-                        } else if col > 0 {
-                            let prev_char_len = vm.line(line)[..col]
-                                .chars()
-                                .last()
-                                .map(|c| c.len_utf8())
-                                .unwrap_or(1);
-                            let caret = self.cursor;
-                            vm.delete_range_line_col((line, col - prev_char_len), (line, col));
-                            // Use undo history so backspace is undoable.
-                            // Push the post-delete caret so undo restores
-                            // the position after the surviving char.
-                            let _ = caret;
-                            self.cursor.1 -= prev_char_len;
-                        } else if line > 0 {
-                            let prev_len = vm.line(line - 1).len();
-                            vm.delete_range_line_col((line - 1, prev_len), (line, 0));
-                            self.cursor = (line - 1, prev_len);
-                        }
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::Delete,
-                        pressed: true,
-                        ..
-                    } => {
-                        if let Some(sel) = self.selection.take() {
-                            let (s, e) = sel.ordered();
-                            let (nl, nc) = vm.replace_selection_with(s, e, "");
-                            self.cursor = (nl, nc);
-                        } else if col < vm.line(line).len() {
-                            let next_char_len = vm.line(line)[col..]
-                                .chars()
-                                .next()
-                                .map(|c| c.len_utf8())
-                                .unwrap_or(1);
-                            vm.delete_range_line_col((line, col), (line, col + next_char_len));
-                        } else if line + 1 < vm.len_lines() {
-                            let line_byte_len = vm.line(line).len();
-                            vm.delete_range_line_col((line, line_byte_len), (line + 1, 0));
-                        }
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::ArrowLeft,
-                        pressed: true,
-                        ..
-                    } => {
-                        if shift {
-                            self.extend_or_init_selection(line, col);
-                            if let Some(sel) = self.selection.as_mut() {
-                                sel.cursor.1 = sel.cursor.1.saturating_sub(1);
-                            }
-                            self.cursor.1 = self.cursor.1.saturating_sub(1);
-                        } else {
-                            self.selection = None;
-                            if col > 0 {
-                                self.cursor.1 -= 1;
-                            }
-                        }
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::ArrowRight,
-                        pressed: true,
-                        ..
-                    } => {
-                        let line_len = vm.line(line).len();
-                        if shift {
-                            self.extend_or_init_selection(line, col);
-                            if let Some(sel) = self.selection.as_mut() {
-                                sel.cursor.1 = clamp_col(sel.cursor.1 + 1, line_len);
-                            }
-                            self.cursor.1 = clamp_col(self.cursor.1 + 1, line_len);
-                        } else {
-                            self.selection = None;
-                            self.cursor.1 = clamp_col(col + 1, line_len);
-                        }
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::ArrowUp,
-                        pressed: true,
-                        ..
-                    } if line > 0 => {
-                        let prev_len = vm.line(line - 1).len();
-                        if shift {
-                            self.extend_or_init_selection(line, col);
-                            if let Some(sel) = self.selection.as_mut() {
-                                sel.cursor.0 -= 1;
-                                sel.cursor.1 = clamp_col(sel.cursor.1, prev_len);
-                            }
-                            self.cursor.0 -= 1;
-                            self.cursor.1 = clamp_col(col, prev_len);
-                        } else {
-                            self.selection = None;
-                            self.cursor.0 -= 1;
-                            self.cursor.1 = clamp_col(col, prev_len);
-                        }
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::ArrowDown,
-                        pressed: true,
-                        ..
-                    } if line + 1 < vm.len_lines() => {
-                        let next_len = vm.line(line + 1).len();
-                        if shift {
-                            self.extend_or_init_selection(line, col);
-                            if let Some(sel) = self.selection.as_mut() {
-                                sel.cursor.0 += 1;
-                                sel.cursor.1 = clamp_col(sel.cursor.1, next_len);
-                            }
-                            self.cursor.0 += 1;
-                            self.cursor.1 = clamp_col(col, next_len);
-                        } else {
-                            self.selection = None;
-                            self.cursor.0 += 1;
-                            self.cursor.1 = clamp_col(col, next_len);
-                        }
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::Home,
-                        pressed: true,
-                        ..
-                    } => {
-                        if shift {
-                            self.extend_or_init_selection(line, col);
-                            if let Some(sel) = self.selection.as_mut() {
-                                sel.cursor.1 = 0;
-                            }
-                        } else {
-                            self.selection = None;
-                        }
-                        self.cursor.1 = 0;
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::End,
-                        pressed: true,
-                        ..
-                    } => {
-                        let line_len = vm.line(line).len();
-                        if shift {
-                            self.extend_or_init_selection(line, col);
-                            if let Some(sel) = self.selection.as_mut() {
-                                sel.cursor.1 = clamp_col(line_len, line_len);
-                            }
-                        } else {
-                            self.selection = None;
-                        }
-                        self.cursor.1 = clamp_col(line_len, line_len);
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::PageUp,
-                        pressed: true,
-                        ..
-                    } => {
-                        let page = page_lines_for(visible_rows);
-                        let new_line = line.saturating_sub(page);
-                        let new_len = if new_line < vm.len_lines() {
-                            vm.line(new_line).len()
-                        } else {
-                            0
-                        };
-                        if shift {
-                            self.extend_or_init_selection(line, col);
-                            if let Some(sel) = self.selection.as_mut() {
-                                sel.cursor.0 = new_line;
-                                sel.cursor.1 = clamp_col(sel.cursor.1, new_len);
-                            }
-                        } else {
-                            self.selection = None;
-                        }
-                        self.cursor.0 = new_line;
-                        self.cursor.1 = clamp_col(col, new_len);
-                        ensure_line_visible(scroll_target_line, self.cursor.0);
-                    }
-                    egui::Event::Key {
-                        key: egui::Key::PageDown,
-                        pressed: true,
-                        ..
-                    } => {
-                        let page = page_lines_for(visible_rows);
-                        let last = vm.len_lines().saturating_sub(1);
-                        let new_line = (line + page).min(last);
-                        let new_len = if new_line < vm.len_lines() {
-                            vm.line(new_line).len()
-                        } else {
-                            0
-                        };
-                        if shift {
-                            self.extend_or_init_selection(line, col);
-                            if let Some(sel) = self.selection.as_mut() {
-                                sel.cursor.0 = new_line;
-                                sel.cursor.1 = clamp_col(sel.cursor.1, new_len);
-                            }
-                        } else {
-                            self.selection = None;
-                        }
-                        self.cursor.0 = new_line;
-                        self.cursor.1 = clamp_col(col, new_len);
-                        ensure_line_visible(scroll_target_line, self.cursor.0);
-                    }
-                    _ => {}
+                    self.cursor = (line, col);
+                    ensure_line_visible(
+                        scroll_target,
+                        line,
+                        row_height,
+                        visible_first,
+                        visible_last,
+                    );
                 }
+                egui::Event::Paste(s) => {
+                    paste_text = Some(s.clone());
+                    self.paste_text = Some(s.clone());
+                }
+                egui::Event::Copy => {
+                    copy_request = self.selection.and_then(|sel| {
+                        let (s, e) = sel.ordered();
+                        if s == e {
+                            None
+                        } else {
+                            Some(vm.text_in_range(s, e))
+                        }
+                    });
+                }
+                egui::Event::Cut => {
+                    cut_request = self.selection.and_then(|sel| {
+                        let (s, e) = sel.ordered();
+                        if s == e {
+                            None
+                        } else {
+                            Some((s, e))
+                        }
+                    });
+                }
+                egui::Event::Key {
+                    key: egui::Key::Z,
+                    pressed: true,
+                    ..
+                } if cmd_or_ctrl => {
+                    if shift {
+                        redo_request = true;
+                    } else {
+                        undo_request = true;
+                    }
+                }
+                egui::Event::Key {
+                    key: egui::Key::Y,
+                    pressed: true,
+                    ..
+                } if cmd_or_ctrl && !shift => {
+                    redo_request = true;
+                }
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    pressed: true,
+                    ..
+                } if cmd_or_ctrl => {
+                    select_all_request = true;
+                }
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    ..
+                } => {
+                    apply_text_insert(vm, "\n", &mut line, &mut col, &mut self.selection);
+                    line = (line + 1).min(vm.len_lines().saturating_sub(1));
+                    col = 0;
+                    self.cursor = (line, col);
+                    ensure_line_visible(
+                        scroll_target,
+                        line,
+                        row_height,
+                        visible_first,
+                        visible_last,
+                    );
+                }
+                egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    pressed: true,
+                    ..
+                } => {
+                    apply_backspace(vm, &mut line, &mut col, &mut self.selection);
+                    self.cursor = (line, col);
+                    ensure_line_visible(
+                        scroll_target,
+                        line,
+                        row_height,
+                        visible_first,
+                        visible_last,
+                    );
+                }
+                egui::Event::Key {
+                    key: egui::Key::Delete,
+                    pressed: true,
+                    ..
+                } => {
+                    apply_delete(vm, &mut line, &mut col, &mut self.selection);
+                    self.cursor = (line, col);
+                    ensure_line_visible(
+                        scroll_target,
+                        line,
+                        row_height,
+                        visible_first,
+                        visible_last,
+                    );
+                }
+                egui::Event::Key {
+                    key: egui::Key::ArrowLeft,
+                    pressed: true,
+                    ..
+                } => {
+                    apply_arrow_left(shift, &mut line, &mut col, &mut self.selection);
+                    self.cursor = (line, col);
+                }
+                egui::Event::Key {
+                    key: egui::Key::ArrowRight,
+                    pressed: true,
+                    ..
+                } => {
+                    let line_len = if line < vm.len_lines() {
+                        vm.line(line).len()
+                    } else {
+                        0
+                    };
+                    apply_arrow_right(shift, &mut line, &mut col, &mut self.selection, line_len);
+                    self.cursor = (line, col);
+                }
+                egui::Event::Key {
+                    key: egui::Key::ArrowUp,
+                    pressed: true,
+                    ..
+                } => {
+                    if line > 0 {
+                        let prev_len = vm.line(line - 1).len();
+                        apply_arrow_vert(
+                            true,
+                            shift,
+                            &mut line,
+                            &mut col,
+                            &mut self.selection,
+                            prev_len,
+                        );
+                        self.cursor = (line, col);
+                        ensure_line_visible(
+                            scroll_target,
+                            line,
+                            row_height,
+                            visible_first,
+                            visible_last,
+                        );
+                    }
+                }
+                egui::Event::Key {
+                    key: egui::Key::ArrowDown,
+                    pressed: true,
+                    ..
+                } => {
+                    if line + 1 < vm.len_lines() {
+                        let next_len = vm.line(line + 1).len();
+                        apply_arrow_vert(
+                            false,
+                            shift,
+                            &mut line,
+                            &mut col,
+                            &mut self.selection,
+                            next_len,
+                        );
+                        self.cursor = (line, col);
+                        ensure_line_visible(
+                            scroll_target,
+                            line,
+                            row_height,
+                            visible_first,
+                            visible_last,
+                        );
+                    }
+                }
+                egui::Event::Key {
+                    key: egui::Key::Home,
+                    pressed: true,
+                    ..
+                } => {
+                    apply_home(shift, &mut line, &mut col, &mut self.selection);
+                    self.cursor = (line, col);
+                }
+                egui::Event::Key {
+                    key: egui::Key::End,
+                    pressed: true,
+                    ..
+                } => {
+                    let line_len = if line < vm.len_lines() {
+                        vm.line(line).len()
+                    } else {
+                        0
+                    };
+                    apply_end(shift, line_len, &mut line, &mut col, &mut self.selection);
+                    self.cursor = (line, col);
+                }
+                egui::Event::Key {
+                    key: egui::Key::PageUp,
+                    pressed: true,
+                    ..
+                } => {
+                    let visible_rows = visible_last.saturating_sub(visible_first).max(1);
+                    let page = page_lines_for(visible_rows);
+                    apply_page_up(vm, page, shift, &mut line, &mut col, &mut self.selection);
+                    self.cursor = (line, col);
+                    ensure_line_visible(
+                        scroll_target,
+                        line,
+                        row_height,
+                        visible_first,
+                        visible_last,
+                    );
+                }
+                egui::Event::Key {
+                    key: egui::Key::PageDown,
+                    pressed: true,
+                    ..
+                } => {
+                    let visible_rows = visible_last.saturating_sub(visible_first).max(1);
+                    let page = page_lines_for(visible_rows);
+                    apply_page_down(vm, page, shift, &mut line, &mut col, &mut self.selection);
+                    self.cursor = (line, col);
+                    ensure_line_visible(
+                        scroll_target,
+                        line,
+                        row_height,
+                        visible_first,
+                        visible_last,
+                    );
+                }
+                _ => {}
             }
-        });
+        }
 
-        // Post-process queued actions.
+        // Post-process deferred OS-level actions.
         if let Some(text) = copy_request {
             ui.ctx().copy_text(text);
         }
@@ -879,8 +866,12 @@ impl CodeEditor {
                 let (nl, nc) = vm.replace_selection_with(s, e, &text);
                 self.cursor = (nl, nc);
             } else {
-                let (nl, nc) = vm.replace_selection_with((line, col), (line, col), &text);
+                let (nl, nc) = vm.replace_selection_with(self.cursor, self.cursor, &text);
                 self.cursor = (nl, nc);
+            }
+            let (l, c) = self.cursor;
+            if l < vm.len_lines() {
+                self.cursor.1 = clamp_col(c, vm.line(l).len());
             }
         }
         if select_all_request {
@@ -900,34 +891,10 @@ impl CodeEditor {
             self.redo(vm);
         }
 
-        // Re-clamp after possible edits.
+        // Final cursor col clamp after the last event.
         let (l, c) = self.cursor;
         if l < vm.len_lines() {
             self.cursor.1 = clamp_col(c, vm.line(l).len());
-        }
-    }
-
-    /// Replace the current selection (if any) with `text` and place the caret
-    /// at the end of the inserted text. Returns `true` iff a selection was
-    /// consumed. Method form (not closure) avoids borrow conflict with the
-    /// `ui.input(|i| ...)` closure that invokes it.
-    fn do_selection_replace(&mut self, text: &str, vm: &mut EditorViewModel) -> bool {
-        if let Some(sel) = self.selection.take() {
-            let (s, e) = sel.ordered();
-            let (nl, nc) = vm.replace_selection_with(s, e, text);
-            self.cursor = (nl, nc);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Initialize selection if absent (plain arrow with Shift). Sets anchor
-    /// to current caret position; cursor stays where the user is moving.
-    fn extend_or_init_selection(&mut self, line: usize, col: usize) {
-        use drz_viewmodel::Selection;
-        if self.selection.is_none() {
-            self.selection = Some(Selection::new((line, col), (line, col)));
         }
     }
 
@@ -1118,15 +1085,317 @@ pub(crate) fn page_lines_for(visible_rows: usize) -> usize {
     ((visible_rows as f32 * 0.85).floor() as usize).max(1)
 }
 
-/// Record that the row at `line` should be scrolled into view. Called from
-/// PageUp / PageDown so the cursor stays on-screen. The caller (show())
-/// reads the proxy cell after the scroll area's paint closure finishes
-/// and translates `line` into a `Vec2` offset using the known row height.
-fn ensure_line_visible(
-    scroll_target_line: &std::rc::Rc<std::cell::RefCell<Option<usize>>>,
+/// Snap the viewport scroll target so `line` is visible. If the cursor row
+/// is already inside `[visible_first, visible_last)` no scroll change is
+/// requested. Otherwise sets `*scroll_target` to the pixel offset that
+/// places the cursor at the top (when above) or bottom (when below) of the
+/// viewport. The caller passes the proxy through from the DiffView so both
+/// panes share one scroll.
+pub(crate) fn ensure_line_visible(
+    scroll_target: &mut Option<f32>,
     line: usize,
+    row_height: f32,
+    visible_first: usize,
+    visible_last: usize,
 ) {
-    *scroll_target_line.borrow_mut() = Some(line);
+    if row_height <= 0.0 || visible_last <= visible_first {
+        return;
+    }
+    if line < visible_first {
+        *scroll_target = Some(line as f32 * row_height);
+    } else if line >= visible_last {
+        // Put cursor at the bottom of the viewport.
+        let visible_lines = (visible_last - visible_first) as f32;
+        let new_y = (line + 1) as f32 * row_height - visible_lines * row_height;
+        *scroll_target = Some(new_y.max(0.0));
+    }
+    // Otherwise cursor is inside the viewport — no scroll change.
+}
+
+// ---------------------------------------------------------------------------
+// Per-event cursor helpers. Each takes `&mut line`, `&mut col`,
+// `&mut selection: Option<Selection>` and mutates them in place. They never
+// touch `self.cursor` directly so they can be unit-tested with no
+// `egui::Context`.
+// ---------------------------------------------------------------------------
+
+/// Insert `text` at the cursor. If a selection is active, the selection is
+/// replaced (mirrors the editor's prior behavior). After the insert, `col`
+/// advances by `text.len()` bytes (the cursor is byte-col based).
+pub(crate) fn apply_text_insert(
+    vm: &mut EditorViewModel,
+    text: &str,
+    line: &mut usize,
+    col: &mut usize,
+    selection: &mut Option<drz_viewmodel::Selection>,
+) {
+    if let Some(sel) = selection.take() {
+        let (s, e) = sel.ordered();
+        let (nl, nc) = vm.replace_selection_with(s, e, text);
+        *line = nl;
+        *col = nc;
+        return;
+    }
+    let caret = (*line, *col);
+    vm.edit_with_caret(
+        byte_of(vm, *line) + *col,
+        byte_of(vm, *line) + *col,
+        text,
+        Some(caret),
+    );
+    *col += text.len();
+    *line = (*line).min(vm.len_lines().saturating_sub(1));
+}
+
+/// Backspace: remove the selection if any, else the char to the left of the
+/// cursor, else join the current line to the previous one.
+pub(crate) fn apply_backspace(
+    vm: &mut EditorViewModel,
+    line: &mut usize,
+    col: &mut usize,
+    selection: &mut Option<drz_viewmodel::Selection>,
+) {
+    if let Some(sel) = selection.take() {
+        let (s, e) = sel.ordered();
+        let (nl, nc) = vm.replace_selection_with(s, e, "");
+        *line = nl;
+        *col = nc;
+        return;
+    }
+    if *col > 0 {
+        // Use the FRESH line length each call so multi-event backspace on a
+        // shrinking line doesn't panic. `floor_col_boundary` was already
+        // applied at the top of handle_keys, so `*col` is on a char boundary.
+        let prev_char_len = vm.line(*line)[..*col]
+            .chars()
+            .last()
+            .map(|c| c.len_utf8())
+            .unwrap_or(1);
+        let prev_col = *col - prev_char_len;
+        vm.delete_range_line_col((*line, prev_col), (*line, *col));
+        *col = prev_col;
+    } else if *line > 0 {
+        let prev_len = vm.line(*line - 1).len();
+        vm.delete_range_line_col((*line - 1, prev_len), (*line, 0));
+        *line -= 1;
+        *col = prev_len;
+    }
+}
+
+/// Delete: remove the selection if any, else the char under the cursor,
+/// else join the next line into the current one.
+pub(crate) fn apply_delete(
+    vm: &mut EditorViewModel,
+    line: &mut usize,
+    col: &mut usize,
+    selection: &mut Option<drz_viewmodel::Selection>,
+) {
+    if let Some(sel) = selection.take() {
+        let (s, e) = sel.ordered();
+        let (nl, nc) = vm.replace_selection_with(s, e, "");
+        *line = nl;
+        *col = nc;
+        return;
+    }
+    let line_len = vm.line(*line).len();
+    if *col < line_len {
+        let next_char_len = vm.line(*line)[*col..]
+            .chars()
+            .next()
+            .map(|c| c.len_utf8())
+            .unwrap_or(1);
+        vm.delete_range_line_col((*line, *col), (*line, *col + next_char_len));
+    } else if *line + 1 < vm.len_lines() {
+        let line_byte_len = vm.line(*line).len();
+        vm.delete_range_line_col((*line, line_byte_len), (*line + 1, 0));
+    }
+}
+
+pub(crate) fn apply_arrow_left(
+    shift: bool,
+    line: &mut usize,
+    col: &mut usize,
+    selection: &mut Option<drz_viewmodel::Selection>,
+) {
+    use drz_viewmodel::Selection;
+    if shift {
+        if selection.is_none() {
+            *selection = Some(Selection::new((*line, *col), (*line, *col)));
+        }
+        if let Some(sel) = selection.as_mut() {
+            sel.cursor.1 = sel.cursor.1.saturating_sub(1);
+        }
+        *col = col.saturating_sub(1);
+    } else {
+        *selection = None;
+        if *col > 0 {
+            *col -= 1;
+        }
+    }
+}
+
+pub(crate) fn apply_arrow_right(
+    shift: bool,
+    line: &mut usize,
+    col: &mut usize,
+    selection: &mut Option<drz_viewmodel::Selection>,
+    line_len: usize,
+) {
+    use drz_viewmodel::Selection;
+    if shift {
+        if selection.is_none() {
+            *selection = Some(Selection::new((*line, *col), (*line, *col)));
+        }
+        if let Some(sel) = selection.as_mut() {
+            sel.cursor.1 = clamp_col(sel.cursor.1 + 1, line_len);
+        }
+        *col = clamp_col(*col + 1, line_len);
+    } else {
+        *selection = None;
+        *col = clamp_col(*col + 1, line_len);
+    }
+}
+
+/// Vertical arrow helper. `up` = ArrowUp (target row = line - 1), else
+/// ArrowDown (target row = line + 1). The caller has already bounds-checked
+/// so the target row exists in the doc.
+pub(crate) fn apply_arrow_vert(
+    up: bool,
+    shift: bool,
+    line: &mut usize,
+    col: &mut usize,
+    selection: &mut Option<drz_viewmodel::Selection>,
+    target_line_len: usize,
+) {
+    use drz_viewmodel::Selection;
+    if shift {
+        if selection.is_none() {
+            *selection = Some(Selection::new((*line, *col), (*line, *col)));
+        }
+        if let Some(sel) = selection.as_mut() {
+            if up {
+                sel.cursor.0 -= 1;
+            } else {
+                sel.cursor.0 += 1;
+            }
+            sel.cursor.1 = clamp_col(sel.cursor.1, target_line_len);
+        }
+    } else {
+        *selection = None;
+    }
+    if up {
+        *line -= 1;
+    } else {
+        *line += 1;
+    }
+    *col = clamp_col(*col, target_line_len);
+}
+
+pub(crate) fn apply_home(
+    shift: bool,
+    line: &mut usize,
+    col: &mut usize,
+    selection: &mut Option<drz_viewmodel::Selection>,
+) {
+    use drz_viewmodel::Selection;
+    if shift {
+        if selection.is_none() {
+            *selection = Some(Selection::new((*line, *col), (*line, *col)));
+        }
+        if let Some(sel) = selection.as_mut() {
+            sel.cursor.1 = 0;
+        }
+    } else {
+        *selection = None;
+    }
+    *col = 0;
+}
+
+pub(crate) fn apply_end(
+    shift: bool,
+    line_len: usize,
+    line: &mut usize,
+    col: &mut usize,
+    selection: &mut Option<drz_viewmodel::Selection>,
+) {
+    use drz_viewmodel::Selection;
+    let end_col = clamp_col(line_len, line_len);
+    if shift {
+        if selection.is_none() {
+            *selection = Some(Selection::new((*line, *col), (*line, *col)));
+        }
+        if let Some(sel) = selection.as_mut() {
+            sel.cursor.1 = end_col;
+        }
+    } else {
+        *selection = None;
+    }
+    *col = end_col;
+}
+
+/// PageUp: jump the cursor up by `page` lines (clamped to 0). The cursor
+/// col is clamped to the new line's length so End-like positioning survives
+/// the jump.
+pub(crate) fn apply_page_up(
+    vm: &mut EditorViewModel,
+    page: usize,
+    shift: bool,
+    line: &mut usize,
+    col: &mut usize,
+    selection: &mut Option<drz_viewmodel::Selection>,
+) {
+    use drz_viewmodel::Selection;
+    let new_line = line.saturating_sub(page);
+    let new_len = if new_line < vm.len_lines() {
+        vm.line(new_line).len()
+    } else {
+        0
+    };
+    if shift {
+        if selection.is_none() {
+            *selection = Some(Selection::new((*line, *col), (*line, *col)));
+        }
+        if let Some(sel) = selection.as_mut() {
+            sel.cursor.0 = new_line;
+            sel.cursor.1 = clamp_col(sel.cursor.1, new_len);
+        }
+    } else {
+        *selection = None;
+    }
+    *line = new_line;
+    *col = clamp_col(*col, new_len);
+}
+
+/// PageDown: jump the cursor down by `page` lines (clamped to last line).
+pub(crate) fn apply_page_down(
+    vm: &mut EditorViewModel,
+    page: usize,
+    shift: bool,
+    line: &mut usize,
+    col: &mut usize,
+    selection: &mut Option<drz_viewmodel::Selection>,
+) {
+    use drz_viewmodel::Selection;
+    let last = vm.len_lines().saturating_sub(1);
+    let new_line = (*line + page).min(last);
+    let new_len = if new_line < vm.len_lines() {
+        vm.line(new_line).len()
+    } else {
+        0
+    };
+    if shift {
+        if selection.is_none() {
+            *selection = Some(Selection::new((*line, *col), (*line, *col)));
+        }
+        if let Some(sel) = selection.as_mut() {
+            sel.cursor.0 = new_line;
+            sel.cursor.1 = clamp_col(sel.cursor.1, new_len);
+        }
+    } else {
+        *selection = None;
+    }
+    *line = new_line;
+    *col = clamp_col(*col, new_len);
 }
 
 fn max_line_cols(vm: &EditorViewModel) -> usize {
@@ -1225,11 +1494,281 @@ mod tests {
 
     #[test]
     fn ensure_line_visible_writes_to_proxy_cell() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        let proxy: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
-        ensure_line_visible(&proxy, 42);
-        assert_eq!(*proxy.borrow(), Some(42));
+        // Old API used a Rc<RefCell<Option<usize>>>; the new API takes
+        // `&mut Option<f32>`. The pixel form subsumes the line form:
+        // setting `Some(line * row_height)` is identical. We test the
+        // pixel form below.
+    }
+
+    // -----------------------------------------------------------------
+    // ensure_line_visible (pixel form)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn ensure_line_visible_no_change_when_cursor_inside_viewport() {
+        let mut target: Option<f32> = None;
+        ensure_line_visible(&mut target, 5, 18.0, 2, 10);
+        assert!(target.is_none());
+    }
+
+    #[test]
+    fn ensure_line_visible_snaps_when_cursor_above_viewport() {
+        let mut target: Option<f32> = None;
+        ensure_line_visible(&mut target, 0, 18.0, 5, 12);
+        // Cursor above: scroll target = line * row_height = 0 * 18 = 0.
+        assert_eq!(target, Some(0.0));
+    }
+
+    #[test]
+    fn ensure_line_visible_snaps_when_cursor_below_viewport() {
+        let mut target: Option<f32> = None;
+        // Viewport rows 0..10 → 10 visible lines. Cursor on row 20.
+        //   new_y = (20 + 1) * 18 - 10 * 18 = 378 - 180 = 198
+        ensure_line_visible(&mut target, 20, 18.0, 0, 10);
+        assert_eq!(target, Some(198.0));
+    }
+
+    #[test]
+    fn ensure_line_visible_handles_zero_viewport() {
+        let mut target: Option<f32> = None;
+        ensure_line_visible(&mut target, 5, 18.0, 5, 5);
+        // degenerate viewport — no change
+        assert!(target.is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // Per-event cursor helpers
+    // -----------------------------------------------------------------
+
+    fn fresh_selection() -> Option<drz_viewmodel::Selection> {
+        None
+    }
+
+    #[test]
+    fn apply_text_insert_inserts_at_cursor_and_advances_col() {
+        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 5;
+        let mut sel = fresh_selection();
+        apply_text_insert(&mut vm, "X", &mut line, &mut col, &mut sel);
+        assert_eq!(vm.document_text(), "helloX\n");
+        assert_eq!((line, col), (0, 6));
+    }
+
+    #[test]
+    fn apply_text_insert_two_calls_insert_both_chars_and_advance_twice() {
+        // Regression for the multi-event-per-frame bug: previously both
+        // events inserted at the same captured col, overwriting each
+        // other.
+        let mut vm = EditorViewModel::from_text("ab\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 1;
+        let mut sel = fresh_selection();
+        apply_text_insert(&mut vm, "X", &mut line, &mut col, &mut sel);
+        apply_text_insert(&mut vm, "Y", &mut line, &mut col, &mut sel);
+        assert_eq!(vm.document_text(), "aXYb\n");
+        assert_eq!((line, col), (0, 3));
+    }
+
+    #[test]
+    fn apply_text_insert_replaces_selection_when_present() {
+        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 5;
+        let mut sel = Some(drz_viewmodel::Selection::new((0, 1), (0, 5)));
+        apply_text_insert(&mut vm, "i", &mut line, &mut col, &mut sel);
+        // Selection covers bytes 1..5 = "ello"; replaced with "i" → "hi".
+        assert_eq!(vm.document_text(), "hi\n");
+        assert_eq!((line, col), (0, 2));
+        assert!(sel.is_none());
+    }
+
+    #[test]
+    fn apply_backspace_removes_one_char_and_decrements_col() {
+        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 5;
+        let mut sel = fresh_selection();
+        apply_backspace(&mut vm, &mut line, &mut col, &mut sel);
+        assert_eq!(vm.document_text(), "hell\n");
+        assert_eq!((line, col), (0, 4));
+    }
+
+    #[test]
+    fn apply_backspace_twice_handles_shrinking_line() {
+        // Regression: the previous version captured `col` ONCE and used
+        // the stale value for the second event, causing `vm.line(line)[..col]`
+        // to slice past the now-shorter line — panic in many cases.
+        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 5;
+        let mut sel = fresh_selection();
+        apply_backspace(&mut vm, &mut line, &mut col, &mut sel);
+        apply_backspace(&mut vm, &mut line, &mut col, &mut sel);
+        assert_eq!(vm.document_text(), "hel\n");
+        assert_eq!((line, col), (0, 3));
+    }
+
+    #[test]
+    fn apply_backspace_at_line_start_joins_previous_line() {
+        let mut vm =
+            EditorViewModel::from_text("hello\nworld\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 1;
+        let mut col = 0;
+        let mut sel = fresh_selection();
+        apply_backspace(&mut vm, &mut line, &mut col, &mut sel);
+        assert_eq!(vm.document_text(), "helloworld\n");
+        assert_eq!((line, col), (0, 5));
+    }
+
+    #[test]
+    fn apply_delete_removes_char_at_cursor() {
+        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 1;
+        let mut sel = fresh_selection();
+        apply_delete(&mut vm, &mut line, &mut col, &mut sel);
+        assert_eq!(vm.document_text(), "hllo\n");
+        assert_eq!((line, col), (0, 1));
+    }
+
+    #[test]
+    fn apply_arrow_left_at_zero_col_stays_put() {
+        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 0;
+        let mut sel = fresh_selection();
+        apply_arrow_left(false, &mut line, &mut col, &mut sel);
+        assert_eq!((line, col), (0, 0));
+    }
+
+    #[test]
+    fn apply_arrow_left_with_shift_extends_selection() {
+        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 5;
+        let mut sel = fresh_selection();
+        apply_arrow_left(true, &mut line, &mut col, &mut sel);
+        assert_eq!(col, 4);
+        // Selection now covers [(0,5), (0,4)] ordered as [(0,4),(0,5)].
+        let s = sel.expect("selection set");
+        assert_eq!(s.ordered(), ((0, 4), (0, 5)));
+    }
+
+    #[test]
+    fn apply_arrow_right_clamps_to_line_end() {
+        let mut vm = EditorViewModel::from_text("hi\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 2;
+        let mut sel = fresh_selection();
+        apply_arrow_right(false, &mut line, &mut col, &mut sel, 2);
+        assert_eq!(col, 2); // already at end
+        apply_arrow_right(false, &mut line, &mut col, &mut sel, 2);
+        assert_eq!(col, 2);
+    }
+
+    #[test]
+    fn apply_arrow_vert_down_clamps_col_to_target_line_len() {
+        let mut vm =
+            EditorViewModel::from_text("hello\nhi\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 5;
+        let mut sel = fresh_selection();
+        // Target line 1 has len 2; cursor col 5 clamps to 2.
+        apply_arrow_vert(false, false, &mut line, &mut col, &mut sel, 2);
+        assert_eq!((line, col), (1, 2));
+    }
+
+    #[test]
+    fn apply_arrow_vert_up_clamps_col_to_target_line_len() {
+        let mut vm =
+            EditorViewModel::from_text("hi\nhello\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 1;
+        let mut col = 5;
+        let mut sel = fresh_selection();
+        apply_arrow_vert(true, false, &mut line, &mut col, &mut sel, 2);
+        assert_eq!((line, col), (0, 2));
+    }
+
+    #[test]
+    fn apply_home_moves_col_to_zero_and_clears_selection() {
+        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 3;
+        let mut sel = Some(drz_viewmodel::Selection::new((0, 0), (0, 3)));
+        apply_home(false, &mut line, &mut col, &mut sel);
+        assert_eq!(col, 0);
+        assert!(sel.is_none());
+    }
+
+    #[test]
+    fn apply_home_with_shift_extends_selection() {
+        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 3;
+        let mut sel = fresh_selection();
+        apply_home(true, &mut line, &mut col, &mut sel);
+        let s = sel.expect("selection set");
+        assert_eq!(s.ordered().0, (0, 0));
+        assert_eq!(s.ordered().1, (0, 3));
+    }
+
+    #[test]
+    fn apply_end_moves_col_to_line_end() {
+        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 1;
+        let mut sel = fresh_selection();
+        apply_end(false, 5, &mut line, &mut col, &mut sel);
+        assert_eq!(col, 5);
+    }
+
+    #[test]
+    fn apply_page_up_decrements_line_by_page() {
+        let mut vm = EditorViewModel::from_text(
+            "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\n",
+            drz_viewmodel::LanguageId::PlainText,
+        );
+        let mut line = 15;
+        let mut col = 0;
+        let mut sel = fresh_selection();
+        apply_page_up(&mut vm, 5, false, &mut line, &mut col, &mut sel);
+        assert_eq!(line, 10);
+    }
+
+    #[test]
+    fn apply_page_down_increments_line_by_page() {
+        let mut vm = EditorViewModel::from_text(
+            "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\n",
+            drz_viewmodel::LanguageId::PlainText,
+        );
+        let mut line = 0;
+        let mut col = 0;
+        let mut sel = fresh_selection();
+        apply_page_down(&mut vm, 5, false, &mut line, &mut col, &mut sel);
+        assert_eq!(line, 5);
+    }
+
+    #[test]
+    fn apply_page_down_clamps_to_last_line() {
+        let mut vm = EditorViewModel::from_text("a\nb\nc\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 0;
+        let mut sel = fresh_selection();
+        apply_page_down(&mut vm, 100, false, &mut line, &mut col, &mut sel);
+        // ropey keeps a phantom trailing line, so len_lines() == 4 and
+        // last = 3.
+        assert_eq!(line, 3);
+    }
+
+    #[test]
+    fn apply_page_up_saturates_at_zero() {
+        let mut vm = EditorViewModel::from_text("a\nb\nc\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 1;
+        let mut col = 0;
+        let mut sel = fresh_selection();
+        apply_page_up(&mut vm, 100, false, &mut line, &mut col, &mut sel);
+        assert_eq!(line, 0);
     }
 
     #[test]

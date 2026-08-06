@@ -451,4 +451,34 @@ mod tests {
         let (_, spans) = vm.styled_line(0);
         assert!(spans.iter().any(|s| s.style == Style::Comment));
     }
+
+    #[test]
+    fn handle_keys_backspace_with_selection_uses_ordered_range() {
+        // Regression: handle_keys' Backspace-with-selection branch must take
+        // the FULL ordered range from Selection::ordered(), not (s, s).
+        // If it passes (s, s) the range is empty and the selected text is
+        // not deleted.
+        let mut vm = EditorViewModel::from_text("hello\n", LanguageId::PlainText);
+        // Simulate a selection covering bytes 1..4 ("ell") of "hello".
+        let sel = Selection::new((0, 1), (0, 4));
+        let (s, e) = sel.ordered();
+        let (nl, nc) = vm.replace_selection_with(s, e, "");
+        assert_eq!(vm.line(0), "ho");
+        assert_eq!((nl, nc), (0, 1));
+    }
+
+    #[test]
+    fn handle_keys_paste_with_selection_uses_ordered_range() {
+        // Regression: handle_keys' Paste-with-selection branch must pass
+        // the FULL ordered range to replace_selection_with, not (s, s).
+        // Passing (s, s) would insert clipboard text without removing the
+        // selection, yielding a duplicated region.
+        let mut vm = EditorViewModel::from_text("hello world\n", LanguageId::PlainText);
+        // Selection over "world" (bytes 6..11); clipboard contains "Rust".
+        let sel = Selection::new((0, 6), (0, 11));
+        let (s, e) = sel.ordered();
+        let (nl, nc) = vm.replace_selection_with(s, e, "Rust");
+        assert_eq!(vm.line(0), "hello Rust");
+        assert_eq!((nl, nc), (0, 10));
+    }
 }

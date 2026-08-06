@@ -315,29 +315,66 @@ impl CodeEditor {
     }
 
     fn handle_keys(&mut self, ui: &mut egui::Ui, vm: &mut EditorViewModel) {
+        use drz_viewmodel::Selection;
         let (line, col) = self.cursor;
-        // Snap col to a char boundary before any slice/insert: arrows move
-        // bytewise and can leave col mid-char. Covers Text/Enter (rope insert
-        // requires boundary byte index) and Backspace (str slice).
         let col = if line < vm.len_lines() {
             floor_col_boundary(&vm.line(line), col)
         } else {
             col
         };
         self.cursor.1 = col;
+        let mods = ui.ctx().input(|i| i.modifiers);
+        let cmd_or_ctrl = mods.command;
+        let shift = mods.shift;
+
+        let mut paste_text: Option<String> = None;
+        let mut copy_request: Option<String> = None;
+        let mut cut_request: Option<((usize, usize), (usize, usize))> = None;
+        let mut select_all_request = false;
+
         ui.input(|i| {
             for event in &i.events {
                 match event {
-                    egui::Event::Text(t) => {
+                    egui::Event::Text(t) if !self.do_selection_replace(t, vm) => {
                         vm.insert_at_line_col(line, col, t);
                         self.cursor.1 += t.len();
                         self.cursor.0 = self.cursor.0.min(vm.len_lines().saturating_sub(1));
+                    }
+                    egui::Event::Paste(s) => {
+                        paste_text = Some(s.clone());
+                    }
+                    egui::Event::Copy => {
+                        copy_request = self.selection.and_then(|sel| {
+                            let (s, e) = sel.ordered();
+                            if s == e {
+                                None
+                            } else {
+                                Some(vm.text_in_range(s, e))
+                            }
+                        });
+                    }
+                    egui::Event::Cut => {
+                        cut_request = self.selection.and_then(|sel| {
+                            let (s, e) = sel.ordered();
+                            if s == e {
+                                None
+                            } else {
+                                Some((s, e))
+                            }
+                        });
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        pressed: true,
+                        ..
+                    } if cmd_or_ctrl => {
+                        select_all_request = true;
                     }
                     egui::Event::Key {
                         key: egui::Key::Enter,
                         pressed: true,
                         ..
-                    } => {
+                    } if !self.do_selection_replace("\n", vm) => {
                         vm.insert_at_line_col(line, col, "\n");
                         self.cursor = (line + 1, 0);
                     }
@@ -346,7 +383,11 @@ impl CodeEditor {
                         pressed: true,
                         ..
                     } => {
-                        if col > 0 {
+                        if let Some(sel) = self.selection.take() {
+                            let (s, e) = sel.ordered();
+                            let (nl, nc) = vm.replace_selection_with(s, e, "");
+                            self.cursor = (nl, nc);
+                        } else if col > 0 {
                             let prev_char_len = vm.line(line)[..col]
                                 .chars()
                                 .last()
@@ -361,43 +402,166 @@ impl CodeEditor {
                         }
                     }
                     egui::Event::Key {
+                        key: egui::Key::Delete,
+                        pressed: true,
+                        ..
+                    } => {
+                        if let Some(sel) = self.selection.take() {
+                            let (s, e) = sel.ordered();
+                            let (nl, nc) = vm.replace_selection_with(s, e, "");
+                            self.cursor = (nl, nc);
+                        } else if col < vm.line(line).len() {
+                            let next_char_len = vm.line(line)[col..]
+                                .chars()
+                                .next()
+                                .map(|c| c.len_utf8())
+                                .unwrap_or(1);
+                            vm.delete_range_line_col((line, col), (line, col + next_char_len));
+                        } else if line + 1 < vm.len_lines() {
+                            let line_byte_len = vm.line(line).len();
+                            vm.delete_range_line_col((line, line_byte_len), (line + 1, 0));
+                        }
+                    }
+                    egui::Event::Key {
                         key: egui::Key::ArrowLeft,
                         pressed: true,
                         ..
-                    } if col > 0 => {
-                        self.cursor.1 -= 1;
+                    } => {
+                        if shift {
+                            self.extend_or_init_selection(line, col);
+                            if let Some(sel) = self.selection.as_mut() {
+                                sel.cursor.1 = sel.cursor.1.saturating_sub(1);
+                            }
+                            self.cursor.1 = self.cursor.1.saturating_sub(1);
+                        } else {
+                            self.selection = None;
+                            if col > 0 {
+                                self.cursor.1 -= 1;
+                            }
+                        }
                     }
                     egui::Event::Key {
                         key: egui::Key::ArrowRight,
                         pressed: true,
                         ..
                     } => {
-                        self.cursor.1 = clamp_col(col + 1, vm.line(line).len());
+                        let line_len = vm.line(line).len();
+                        if shift {
+                            self.extend_or_init_selection(line, col);
+                            if let Some(sel) = self.selection.as_mut() {
+                                sel.cursor.1 = clamp_col(sel.cursor.1 + 1, line_len);
+                            }
+                            self.cursor.1 = clamp_col(self.cursor.1 + 1, line_len);
+                        } else {
+                            self.selection = None;
+                            self.cursor.1 = clamp_col(col + 1, line_len);
+                        }
                     }
                     egui::Event::Key {
                         key: egui::Key::ArrowUp,
                         pressed: true,
                         ..
                     } if line > 0 => {
-                        self.cursor.0 -= 1;
-                        self.cursor.1 = clamp_col(col, vm.line(line - 1).len());
+                        let prev_len = vm.line(line - 1).len();
+                        if shift {
+                            self.extend_or_init_selection(line, col);
+                            if let Some(sel) = self.selection.as_mut() {
+                                sel.cursor.0 -= 1;
+                                sel.cursor.1 = clamp_col(sel.cursor.1, prev_len);
+                            }
+                            self.cursor.0 -= 1;
+                            self.cursor.1 = clamp_col(col, prev_len);
+                        } else {
+                            self.selection = None;
+                            self.cursor.0 -= 1;
+                            self.cursor.1 = clamp_col(col, prev_len);
+                        }
                     }
                     egui::Event::Key {
                         key: egui::Key::ArrowDown,
                         pressed: true,
                         ..
                     } if line + 1 < vm.len_lines() => {
-                        self.cursor.0 += 1;
-                        self.cursor.1 = clamp_col(col, vm.line(line + 1).len());
+                        let next_len = vm.line(line + 1).len();
+                        if shift {
+                            self.extend_or_init_selection(line, col);
+                            if let Some(sel) = self.selection.as_mut() {
+                                sel.cursor.0 += 1;
+                                sel.cursor.1 = clamp_col(sel.cursor.1, next_len);
+                            }
+                            self.cursor.0 += 1;
+                            self.cursor.1 = clamp_col(col, next_len);
+                        } else {
+                            self.selection = None;
+                            self.cursor.0 += 1;
+                            self.cursor.1 = clamp_col(col, next_len);
+                        }
                     }
                     _ => {}
                 }
             }
         });
-        // re-clamp after possible edits
+
+        // Post-process queued actions.
+        if let Some(text) = copy_request {
+            ui.ctx().copy_text(text);
+        }
+        if let Some((s, e)) = cut_request {
+            let text = vm.text_in_range(s, e);
+            ui.ctx().copy_text(text);
+            let (nl, nc) = vm.replace_selection_with(s, e, "");
+            self.cursor = (nl, nc);
+            self.selection = None;
+        }
+        if let Some(text) = paste_text {
+            if let Some(sel) = self.selection.take() {
+                let (s, e) = sel.ordered();
+                let (nl, nc) = vm.replace_selection_with(s, e, &text);
+                self.cursor = (nl, nc);
+            } else {
+                let (nl, nc) = vm.replace_selection_with((line, col), (line, col), &text);
+                self.cursor = (nl, nc);
+            }
+        }
+        if select_all_request {
+            let last = vm.len_lines().saturating_sub(1);
+            let last_len = if last < vm.len_lines() {
+                vm.line(last).len()
+            } else {
+                0
+            };
+            self.selection = Some(Selection::new((0, 0), (last, last_len)));
+            self.cursor = (last, last_len);
+        }
+
+        // Re-clamp after possible edits.
         let (l, c) = self.cursor;
         if l < vm.len_lines() {
             self.cursor.1 = clamp_col(c, vm.line(l).len());
+        }
+    }
+
+    /// Replace the current selection (if any) with `text` and place the caret
+    /// at the end of the inserted text. Returns `true` iff a selection was
+    /// consumed. Method form (not closure) avoids borrow conflict with the
+    /// `ui.input(|i| ...)` closure that invokes it.
+    fn do_selection_replace(&mut self, text: &str, vm: &mut EditorViewModel) -> bool {
+        if let Some(sel) = self.selection.take() {
+            let (s, e) = sel.ordered();
+            let (nl, nc) = vm.replace_selection_with(s, e, text);
+            self.cursor = (nl, nc);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Initialize selection if absent (plain arrow with Shift). Sets anchor
+    /// to current caret position; cursor stays where the user is moving.
+    fn extend_or_init_selection(&mut self, line: usize, col: usize) {
+        use drz_viewmodel::Selection;
+        if self.selection.is_none() {
+            self.selection = Some(Selection::new((line, col), (line, col)));
         }
     }
 }
@@ -516,6 +680,34 @@ fn append_styled(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_extend_from_anchor_on_shift_right() {
+        // Pure-logic test of the helper used by handle_keys.
+        let mut sel = drz_viewmodel::Selection::new((0, 2), (0, 2));
+        // simulate Shift+Right: extend cursor one col, anchor stays.
+        sel.cursor = (0, 3);
+        assert_eq!(sel.ordered(), ((0, 2), (0, 3)));
+        assert!(sel.is_selected());
+        // simulate Shift+Right again
+        sel.cursor = (0, 4);
+        assert_eq!(sel.ordered(), ((0, 2), (0, 4)));
+    }
+
+    #[test]
+    #[allow(unused_assignments)]
+    fn selection_collapse_then_extend_starts_new_anchor() {
+        // Plain Right click collapses; Shift+Right then extends from new anchor.
+        let mut sel: Option<drz_viewmodel::Selection> = None;
+        // click at (0,5) → selection = Some(anchor=(0,5), cursor=(0,5))
+        sel = Some(drz_viewmodel::Selection::new((0, 5), (0, 5)));
+        assert!(!sel.unwrap().is_selected());
+        // Shift+Right → cursor = (0,6), anchor stays (0,5)
+        if let Some(s) = sel.as_mut() {
+            s.cursor = (0, 6);
+        }
+        assert_eq!(sel.unwrap().ordered(), ((0, 5), (0, 6)));
+    }
 
     #[test]
     fn clamp_col_to_line_len() {

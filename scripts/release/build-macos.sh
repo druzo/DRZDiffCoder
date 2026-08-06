@@ -31,6 +31,17 @@ fi
 # Source osxcross env so clang/wrapper binaries are available
 # shellcheck disable=SC1091
 . "$OSXCROSS/target/env.sh" 2>/dev/null || true
+export PATH="$OSXCROSS/target/bin:$PATH"
+
+# Map CC_*/CXX_* env vars to the osxcross clang wrappers. cc-rs (used by
+# tree-sitter, ring, etc.) reads CC_<target-with-dashes-underscored>.
+case "$ARCH" in
+  x86_64) OSXCROSS_CC="x86_64-apple-darwin20.4-clang" ;;
+  arm64)  OSXCROSS_CC="aarch64-apple-darwin20.4-clang" ;;
+esac
+export "CC_$(echo "$TARGET" | tr '-' '_')=$OSXCROSS_CC"
+export "CXX_$(echo "$TARGET" | tr '-' '_')=${OSXCROSS_CC}++"
+export MACOSX_DEPLOYMENT_TARGET=11.0
 
 STAGE="${REPO_ROOT}/releases/${VERSION}/${FOLDER}"
 mkdir -p "$STAGE"
@@ -81,23 +92,31 @@ codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || echo "WARN: ad-hoc co
 # Zip the .app for direct download
 ( cd "$STAGE" && zip -qr "${APP_NAME}_${VERSION}_${ARCH}.zip" "${APP_NAME}.app" )
 
-# .dmg via libdmg-hfsplus ---------------------------------------------------
+# .dmg via genisoimage + libdmg-hfsplus -------------------------------------
+# genisoimage (from cdrkit, apt-installed) creates a hybrid ISO9660/HFS+
+# filesystem containing DRZDiff.app. libdmg-hfsplus's `dmg` then wraps that
+# ISO in the Apple DMG container (koly trailer).
 if [ -z "${SKIP_DMG:-}" ]; then
   echo "[macos] .dmg"
-  DMG_VOL="DRZDiff_${VERSION}_${ARCH}"
-  DMG_OUT="${STAGE}/${DMG_VOL}.dmg"
+  GENISOIMAGE="$(command -v genisoimage || echo "$HOME/.local/cdrkit/usr/bin/genisoimage")"
+  if [ ! -x "$GENISOIMAGE" ]; then
+    echo "WARN: genisoimage not found — .dmg skipped (install cdrkit)" >&2
+  else
+    DMG_VOL="DRZDiff ${VERSION}"
+    DMG_OUT="${STAGE}/DRZDiff_${VERSION}_${ARCH}.dmg"
+    STAGE_TMP="$STAGE/.dmg-stage"
+    rm -rf "$STAGE_TMP" /tmp/drz.iso
+    mkdir -p "$STAGE_TMP/Applications"
+    cp -R "$APP_DIR" "$STAGE_TMP/Applications/"
+    ln -snf Applications "$STAGE_TMP/Applications_DRZDiff" 2>/dev/null || true
 
-  # Create sparse image
-  rm -f /tmp/drz.dmg.sparseimage
-  DMG_DIR="$LIBDMG/build/dmg"
-  HFS_DIR="$LIBDMG/build/hfs"
-  "$DMG_DIR/dmg" create /tmp/drz.dmg.sparseimage "$DMG_VOL" 200
-  "$HFS_DIR/hfsplus" /tmp/drz.dmg.sparseimage add "$APP_DIR" \
-    "Applications -> /Applications" 2>/dev/null || true
-  "$HFS_DIR/hfsplus" /tmp/drz.dmg.sparseimage mkdir Applications
-  "$HFS_DIR/hfsplus" /tmp/drz.dmg.sparseimage rmdir Applications 2>/dev/null || true
-  "$DMG_DIR/dmg" build /tmp/drz.dmg.sparseimage "$DMG_OUT"
-  rm -f /tmp/drz.dmg.sparseimage
+    "$GENISOIMAGE" -V "$DMG_VOL" -no-pad -r -apple \
+      -o /tmp/drz.iso "$STAGE_TMP" 2>&1 | tail -3
+    "$LIBDMG/build/dmg/dmg" /tmp/drz.iso "$DMG_OUT" 2>&1 | tail -3
+    rm -f /tmp/drz.iso
+    rm -rf "$STAGE_TMP"
+    ls -la "$DMG_OUT" 2>&1 | head -1
+  fi
 fi
 
 # install.sh (a user runs this on macOS) ------------------------------------
@@ -108,19 +127,33 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-if [ -f "DRZDiff_*_*.dmg" ] 2>/dev/null && ls DRZDiff_*_*.dmg >/dev/null 2>&1; then
+install_app() {
+  local app="DRZDiff.app"
+  echo "Installing $app to /Applications ..."
+  if [ -d "/Applications/$app" ]; then
+    rm -rf "/Applications/$app"
+  fi
+  cp -R "$app" /Applications/
+  xattr -dr com.apple.quarantine "/Applications/$app" 2>/dev/null || true
+  echo "Done. Open: open /Applications/$app"
+}
+
+if ls DRZDiff_*_*.dmg >/dev/null 2>&1; then
   DMG=$(ls DRZDiff_*_*.dmg | head -1)
   echo "Mounting $DMG ..."
   hdiutil attach "$DMG" -nobrowse -quiet
   sleep 1
-  MOUNTPOINT=$(ls -d /Volumes/DRZDiff* | head -1)
+  MOUNTPOINT=$(ls -d /Volumes/DRZDiff* /Volumes/"DRZDiff "* 2>/dev/null | head -1)
+  if [ -z "$MOUNTPOINT" ]; then
+    echo "ERROR: mountpoint not found" >&2
+    exit 1
+  fi
   cp -R "$MOUNTPOINT/DRZDiff.app" /Applications/
-  hdiutil detach "$MOUNTPOINT"
+  hdiutil detach "$MOUNTPOINT" || true
+  xattr -dr com.apple.quarantine "/Applications/DRZDiff.app" 2>/dev/null || true
   echo "Installed to /Applications/DRZDiff.app"
 elif [ -d "DRZDiff.app" ]; then
-  echo "Installing DRZDiff.app to /Applications/ ..."
-  cp -R DRZDiff.app /Applications/
-  echo "Done."
+  install_app
 else
   echo "ERROR: no .dmg or .app found in $(pwd)" >&2
   exit 1
@@ -130,6 +163,15 @@ chmod +x "$STAGE/install.sh"
 
 # SHA256SUMS -----------------------------------------------------------------
 cd "$STAGE"
-sha256sum * > SHA256SUMS
-ls -la
+# Include both top-level files and the DRZDiff.app bundle contents so users
+# can verify the .app byte-for-byte against the checksum.
+{
+  # Use a non-strict `*` so `sha256sum` doesn't exit non-zero on directories.
+  for f in *; do
+    [ "$f" = "SHA256SUMS" ] && continue
+    [ -f "$f" ] && sha256sum "$f"
+  done
+  find DRZDiff.app -type f -exec sha256sum {} +
+} | sort -u > SHA256SUMS
+cat SHA256SUMS
 echo "[macos] done"

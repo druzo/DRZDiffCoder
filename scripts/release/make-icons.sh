@@ -52,18 +52,52 @@ elif command -v png2icns >/dev/null 2>&1; then
     "$SRC" 512 512
 elif python3 -c "import PIL" 2>/dev/null; then
   python3 - <<'PY' "$SRC" "$ICNS" "$ICO"
-import sys, os
+"""
+Build a proper Apple .icns file from a single PNG.
+
+ICNS file layout:
+  header: 'icns' (4) + total_size (4, big-endian)
+  entries: type (4) + size (4, big-endian) + data
+PNG entries used (modern macOS):
+  icp4  16   ic07  128   ic08  256   ic09  512   ic10 1024
+  icp5  32   ic11   32   ic12   64   ic13  256 (128@2x)   ic14 512 (256@2x)
+  icp6  64
+Sizes we emit: 16, 32, 64, 128, 256, 512 (PNG-encoded).
+"""
+import sys, struct
 from PIL import Image
+
 src, icns, ico = sys.argv[1], sys.argv[2], sys.argv[3]
 img = Image.open(src).convert("RGBA")
-sizes = [(s, s) for s in (16, 32, 48, 64, 96, 128, 256)]
-img.save(ico, format="ICO", sizes=sizes)
-# Python has no native .icns encoder. Write the same .ico bytes to .icns —
-# build_macos.sh tolerates this and CFBundleIconFile will point at it; on
-# macOS the dock/launchpad falls back to the embedded PNG via with_icon.
+
+# Write a multi-size .ico (always, for Windows PE embed)
+ico_sizes = [(s, s) for s in (16, 32, 48, 64, 96, 128, 256)]
+img.save(ico, format="ICO", sizes=ico_sizes)
+
+# Build .icns
+TYPE_SIZE = {
+    16:  b"icp4", 32:  b"icp5", 64:  b"icp6",
+    128: b"ic07", 256: b"ic08", 512: b"ic09",
+    1024: b"ic10",
+}
+entries = []
+for sz in (16, 32, 64, 128, 256, 512, 1024):
+    if sz > max(img.size):
+        continue
+    scaled = img.resize((sz, sz), Image.LANCZOS)
+    from io import BytesIO
+    buf = BytesIO()
+    scaled.save(buf, format="PNG", optimize=True)
+    payload = buf.getvalue()
+    entries.append((TYPE_SIZE[sz], payload))
+
+# Total = 8 (header) + sum(8 + len(payload))
+total = 8 + sum(8 + len(p) for _, p in entries)
 with open(icns, "wb") as f:
-    f.write(open(ico, "rb").read())
-print("[icons] NOTE: macOS-native .icns unavailable — copied .ico as fallback")
+    f.write(b"icns" + struct.pack(">I", total))
+    for typ, payload in entries:
+        f.write(typ + struct.pack(">I", 8 + len(payload)) + payload)
+print(f"[icons] wrote {icns} with sizes {[s for s,_ in entries]}")
 PY
 else
   echo "WARN: no iconutil/png2icns/python-pil — skipping .icns" >&2

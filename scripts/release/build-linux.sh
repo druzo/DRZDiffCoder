@@ -11,10 +11,27 @@ build_target() {
   local target="$1" folder="$2" deb_arch="$3" appimage="$4"
   echo "[linux] build → $target ($folder)"
   cd "$REPO_ROOT"
+  # Set the cross C compiler for cc-rs / build scripts.
+  local cc_var="CC_$(echo "$target" | tr '-' '_')"
+  local cxx_var="CXX_$(echo "$target" | tr '-' '_')"
+  case "$target" in
+    x86_64-unknown-linux-gnu)
+      export "${cc_var}=cc"
+      export "${cxx_var}=c++"
+      ;;
+    aarch64-unknown-linux-gnu)
+      export "${cc_var}=aarch64-linux-gnu-gcc"
+      export "${cxx_var}=aarch64-linux-gnu-g++"
+      ;;
+  esac
   cargo build --release --target "$target" -p drz-app --locked
   local bin="target/${target}/release/drzdiff"
   [ -f "$bin" ] || { echo "missing $bin" >&2; return 1; }
-  strip "$bin" 2>/dev/null || true
+  # Use target-aware strip so cross-built binaries get stripped.
+  case "$target" in
+    x86_64-unknown-linux-gnu)  strip "$bin" 2>/dev/null || true ;;
+    aarch64-unknown-linux-gnu) aarch64-linux-gnu-strip "$bin" 2>/dev/null || true ;;
+  esac
 
   local stage="${REPO_ROOT}/releases/${VERSION}/${folder}"
   rm -rf "$stage"

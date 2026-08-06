@@ -88,7 +88,7 @@ EOF
 for d in releases/${VERSION}/*/; do
   [ -d "$d" ] || continue
   platform=$(basename "$d")
-  files=$(ls "$d" | grep -v '^SHA256SUMS$' | grep -v '^INDEX.md$' | grep -v '^install' | tr '\n' ' ')
+  files=$(ls "$d" | grep -v '^SHA256SUMS$' | grep -v '^INDEX.md$' | tr '\n' ' ')
   echo "| \`${platform}\` | | ${files} |" >> "$INDEX"
 done
 

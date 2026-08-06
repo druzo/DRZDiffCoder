@@ -36,6 +36,7 @@ APT_PKGS=(
   file
   python3
   python3-pil
+  wixl
 )
 log "apt install (${#APT_PKGS[@]} pkgs)"
 if [ "$(id -u)" -ne 0 ] && ! $SUDO -n true 2>/dev/null; then

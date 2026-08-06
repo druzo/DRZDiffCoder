@@ -78,12 +78,14 @@ github/workflows/release.yml   # NEW
 - Pipeline is idempotent: re-running same `VERSION` overwrites prior artifacts (folder is wiped at step 4 for each platform).
 - `releases/` ignored by git; CI uploads directly to a GitHub Release.
 
-## Out of scope
+## Out of scope (this iteration)
 
+- **Windows .msi when building on Linux+Wine**: WiX `light.exe` fails with `LGHT0216 / Win32 0x65B` — known incompatibility between Wine and the cabinet extractor used by WiX 3.x. The pipeline still calls `cargo wix`; if it fails (currently always, on Linux+Wine) the build logs a warning and falls back to a direct-copy `install.bat`. CI on a Windows runner does build the .msi cleanly — the same `scripts/release/build-windows.sh` is used.
+- **macOS .dmg**: requires the osxcross toolchain + a downloaded Apple SDK (linked from `osxcross/build_sdk.sh`). The SDK is freely available but requires accepting Apple's EULA. On hosts without the SDK, the pipeline skips macOS targets silently (logged as `MISSING: osxcross` in check).
 - Code signing (Windows EV cert, Apple Developer ID notarization, GPG key).
 - Auto-update / Sparkle / WinSquirrel.
-- `rpmbuild` for Fedora/RHEL — not in apt, leaving as follow-up.
-- Universal/fat macOS binary (lipo) — `.app` per arch is enough for now; user can pick the right `.dmg`.
+- `rpmbuild` for Fedora/RHEL — apt installs don't provide it.
+- Universal/fat macOS binary (lipo) — `.app` per arch is enough for now; user picks the right `.dmg`.
 
 ## Verification
 

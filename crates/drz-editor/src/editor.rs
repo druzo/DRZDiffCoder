@@ -40,12 +40,20 @@ impl CodeEditor {
         scroll: &mut egui::Vec2,
         row_decor: Option<&dyn Fn(usize) -> Option<RowDecor>>,
     ) {
-        let font_id = egui::FontId::monospace(14.0);
+        let font_id = egui::FontId::monospace(15.0);
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
         let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
         let dark = ui.visuals().dark_mode;
-        let gutter_width = 48.0;
+        let gutter_width = 54.0;
         let pane_width = ui.available_width();
+        let gutter_separator = egui::Stroke::new(
+            1.0,
+            if dark {
+                egui::Color32::from_rgba_unmultiplied(80, 90, 130, 100)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30)
+            },
+        );
 
         let rows = if line_of_row.is_some() {
             total_rows
@@ -96,6 +104,23 @@ impl CodeEditor {
 
                 let focused = response.has_focus();
                 let painter = ui.painter_at(rect);
+                // Gutter background (subtle, separates from the code area).
+                let gutter_bg = if dark {
+                    egui::Color32::from_rgb(20, 26, 50)
+                } else {
+                    egui::Color32::from_rgb(240, 242, 248)
+                };
+                painter.rect_filled(
+                    egui::Rect::from_min_size(rect.min, egui::vec2(gutter_width, rect.height())),
+                    0.0,
+                    gutter_bg,
+                );
+                painter.vline(
+                    rect.left() + gutter_width,
+                    rect.top()..=rect.bottom(),
+                    gutter_separator,
+                );
+
                 // Paint row backgrounds + inline emphasis first, then text on top.
                 for row in first_row..last_row {
                     let y = rect.top() + row as f32 * row_height;
@@ -103,7 +128,7 @@ impl CodeEditor {
                         if let Some(bg) = decor.bg {
                             painter.rect_filled(
                                 egui::Rect::from_min_max(
-                                    egui::pos2(rect.left(), y),
+                                    egui::pos2(rect.left() + gutter_width, y),
                                     egui::pos2(rect.left() + pane_width, y + row_height),
                                 ),
                                 0.0,
@@ -134,7 +159,7 @@ impl CodeEditor {
                         None => Some(row),
                     };
                     let Some(line) = line_opt else { continue }; // padding row
-                                                                 // gutter
+                    // gutter line number
                     painter.text(
                         egui::pos2(rect.left() + gutter_width - 8.0, y),
                         egui::Align2::RIGHT_TOP,
@@ -150,7 +175,7 @@ impl CodeEditor {
                     painter.galley(
                         egui::pos2(rect.left() + gutter_width, y),
                         galley,
-                        egui::Color32::WHITE,
+                        ui.visuals().text_color(),
                     );
                     // cursor
                     if focused && self.cursor.0 == line {

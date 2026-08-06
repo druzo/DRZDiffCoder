@@ -4,22 +4,22 @@ use drz_viewmodel::types::Style;
 pub fn style_color(style: Style, dark: bool) -> egui::Color32 {
     use egui::Color32;
     match (style, dark) {
-        (Style::Keyword, true) => Color32::from_rgb(198, 120, 221),
+        (Style::Keyword, true) => Color32::from_rgb(232, 121, 249),
         (Style::Keyword, false) => Color32::from_rgb(166, 38, 164),
-        (Style::StringLit, true) => Color32::from_rgb(152, 195, 121),
-        (Style::StringLit, false) => Color32::from_rgb(80, 161, 79),
-        (Style::Comment, true) => Color32::from_rgb(128, 132, 144),
-        (Style::Comment, false) => Color32::from_rgb(160, 160, 160),
-        (Style::Function, true) => Color32::from_rgb(97, 175, 239),
-        (Style::Function, false) => Color32::from_rgb(64, 120, 242),
-        (Style::Type, true) => Color32::from_rgb(229, 192, 123),
-        (Style::Type, false) => Color32::from_rgb(193, 132, 1),
-        (Style::Number, true) => Color32::from_rgb(209, 154, 102),
-        (Style::Number, false) => Color32::from_rgb(182, 86, 17),
-        (Style::Constant, true) => Color32::from_rgb(86, 182, 194),
-        (Style::Constant, false) => Color32::from_rgb(1, 132, 188),
-        (Style::Default, true) => Color32::from_rgb(220, 223, 228),
-        (Style::Default, false) => Color32::from_rgb(56, 58, 66),
+        (Style::StringLit, true) => Color32::from_rgb(163, 230, 53),
+        (Style::StringLit, false) => Color32::from_rgb(20, 130, 60),
+        (Style::Comment, true) => Color32::from_rgb(120, 130, 150),
+        (Style::Comment, false) => Color32::from_rgb(140, 148, 160),
+        (Style::Function, true) => Color32::from_rgb(34, 211, 238),
+        (Style::Function, false) => Color32::from_rgb(20, 110, 200),
+        (Style::Type, true) => Color32::from_rgb(251, 191, 36),
+        (Style::Type, false) => Color32::from_rgb(170, 100, 0),
+        (Style::Number, true) => Color32::from_rgb(255, 138, 80),
+        (Style::Number, false) => Color32::from_rgb(180, 80, 12),
+        (Style::Constant, true) => Color32::from_rgb(94, 200, 220),
+        (Style::Constant, false) => Color32::from_rgb(0, 120, 170),
+        (Style::Default, true) => Color32::from_rgb(220, 223, 232),
+        (Style::Default, false) => Color32::from_rgb(40, 44, 56),
     }
 }
 
@@ -27,10 +27,10 @@ pub fn style_color(style: Style, dark: bool) -> egui::Color32 {
 pub fn line_bg(bg: RowBg, dark: bool) -> egui::Color32 {
     use egui::Color32;
     match (bg, dark) {
-        (RowBg::Added, true) => Color32::from_rgba_unmultiplied(40, 167, 69, 55),
-        (RowBg::Added, false) => Color32::from_rgba_unmultiplied(40, 167, 69, 45),
-        (RowBg::Removed, true) => Color32::from_rgba_unmultiplied(220, 53, 69, 55),
-        (RowBg::Removed, false) => Color32::from_rgba_unmultiplied(220, 53, 69, 45),
+        (RowBg::Added, true) => Color32::from_rgba_unmultiplied(34, 211, 238, 42),
+        (RowBg::Added, false) => Color32::from_rgba_unmultiplied(34, 211, 238, 22),
+        (RowBg::Removed, true) => Color32::from_rgba_unmultiplied(232, 121, 249, 42),
+        (RowBg::Removed, false) => Color32::from_rgba_unmultiplied(232, 121, 249, 22),
     }
 }
 
@@ -39,9 +39,9 @@ pub fn line_bg(bg: RowBg, dark: bool) -> egui::Color32 {
 pub fn inline_bg(bg: RowBg, dark: bool) -> egui::Color32 {
     use egui::Color32;
     match (bg, dark) {
-        (RowBg::Added, true) => Color32::from_rgba_unmultiplied(40, 167, 69, 120),
-        (RowBg::Added, false) => Color32::from_rgba_unmultiplied(46, 160, 67, 110),
-        (RowBg::Removed, true) => Color32::from_rgba_unmultiplied(220, 53, 69, 120),
-        (RowBg::Removed, false) => Color32::from_rgba_unmultiplied(207, 34, 46, 110),
+        (RowBg::Added, true) => Color32::from_rgba_unmultiplied(34, 211, 238, 110),
+        (RowBg::Added, false) => Color32::from_rgba_unmultiplied(34, 211, 238, 80),
+        (RowBg::Removed, true) => Color32::from_rgba_unmultiplied(232, 121, 249, 110),
+        (RowBg::Removed, false) => Color32::from_rgba_unmultiplied(232, 121, 249, 80),
     }
 }

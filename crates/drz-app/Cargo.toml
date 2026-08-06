@@ -14,6 +14,7 @@ eframe.workspace = true
 egui.workspace = true
 clap.workspace = true
 rfd.workspace = true
+image.workspace = true
 drz-viewmodel = { path = "../drz-viewmodel" }
 drz-diff-ui = { path = "../drz-diff-ui" }
 

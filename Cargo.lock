@@ -1004,6 +1004,7 @@ dependencies = [
  "drz-viewmodel",
  "eframe",
  "egui",
+ "image",
  "predicates",
  "rfd",
 ]

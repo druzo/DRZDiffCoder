@@ -205,6 +205,45 @@ impl DiffViewModel {
         }
         self.flush_diff_now();
     }
+
+    /// Summary counts derived from the current hunks / line-status slices.
+    /// Cheap: no recomputation, just sums over already-materialized fields.
+    pub fn stats(&self) -> DiffStats {
+        let added = self
+            .line_decor
+            .status_right
+            .iter()
+            .filter(|s| matches!(s, LineStatus::Added))
+            .count();
+        let removed = self
+            .line_decor
+            .status_left
+            .iter()
+            .filter(|s| matches!(s, LineStatus::Removed))
+            .count();
+        DiffStats {
+            hunks: self.hunks.len(),
+            added,
+            removed,
+        }
+    }
+
+    /// Swap left and right editors (text, dirty flag, path all carry over).
+    /// Hunks and decoration are invalidated; the next `poll()` recomputes.
+    pub fn swap_sides(&mut self) {
+        std::mem::swap(&mut self.left, &mut self.right);
+        self.dirty_since = Some(Instant::now() - DEBOUNCE);
+        self.in_flight = false;
+        self.rx = None;
+    }
+}
+
+/// Aggregate counts surfaced by the status bar.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DiffStats {
+    pub hunks: usize,
+    pub added: usize,
+    pub removed: usize,
 }
 
 /// Content-line count matching `diff_lines` semantics: ropey's trailing
@@ -609,5 +648,49 @@ mod tests {
         let mut doc = drz_core::Document::from_text("a\nb\n");
         doc.replace_lines(99, 100, "X");
         assert_eq!(doc.to_string(), "a\nb\n");
+    }
+
+    #[test]
+    fn stats_count_added_removed_and_hunks() {
+        // "a\nb\nc\n" vs "a\nX\nc\n": single hunk, 1 removed + 1 added.
+        let mut vm = DiffViewModel::new(
+            EditorViewModel::from_text("a\nb\nc\n", LanguageId::PlainText),
+            EditorViewModel::from_text("a\nX\nc\n", LanguageId::PlainText),
+        );
+        vm.flush_diff_now();
+        let s = vm.stats();
+        assert_eq!(s.hunks, 1);
+        assert_eq!(s.removed, 1);
+        assert_eq!(s.added, 1);
+    }
+
+    #[test]
+    fn swap_sides_swaps_text_and_path() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("drzvm_swap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let lp = dir.join("L.txt");
+        let rp = dir.join("R.txt");
+        std::fs::File::create(&lp)
+            .unwrap()
+            .write_all(b"left\n")
+            .unwrap();
+        std::fs::File::create(&rp)
+            .unwrap()
+            .write_all(b"right\n")
+            .unwrap();
+        let mut vm = DiffViewModel::new(
+            EditorViewModel::open(&lp).unwrap(),
+            EditorViewModel::open(&rp).unwrap(),
+        );
+        vm.flush_diff_now();
+        assert_eq!(vm.left().line(0), "left");
+        assert_eq!(vm.right().line(0), "right");
+        vm.swap_sides();
+        vm.flush_diff_now();
+        assert_eq!(vm.left().line(0), "right");
+        assert_eq!(vm.right().line(0), "left");
+        assert_eq!(vm.left().path().unwrap(), rp);
+        assert_eq!(vm.right().path().unwrap(), lp);
     }
 }

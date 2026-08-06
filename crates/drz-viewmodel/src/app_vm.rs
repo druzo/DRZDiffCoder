@@ -81,18 +81,13 @@ impl AppViewModel {
                         .unwrap_or_else(|| "(untitled)".into())
                 };
                 let dirty = if d.left().is_dirty() || d.right().is_dirty() {
-                    " *"
+                    " •"
                 } else {
                     ""
                 };
-                format!(
-                    "DRZDiffCoder — {} ↔ {}{}",
-                    name(d.left()),
-                    name(d.right()),
-                    dirty
-                )
+                format!("DRZ Diff — {} ↔ {}{}", name(d.left()), name(d.right()), dirty)
             }
-            None => "DRZDiffCoder".into(),
+            None => "DRZ Diff".into(),
         }
     }
 }
@@ -149,8 +144,9 @@ mod tests {
         let l = tmpfile("a\n", "vm_l4.txt");
         let r = tmpfile("b\n", "vm_r4.txt");
         let mut vm = AppViewModel::open_pair(&l, &r);
-        assert!(!vm.title().contains('*'));
+        assert!(vm.title().starts_with("DRZ Diff — "));
+        assert!(!vm.title().contains('•'));
         vm.diff_mut().unwrap().right_mut().edit(0, 0, "z");
-        assert!(vm.title().contains('*'));
+        assert!(vm.title().contains('•'));
     }
 }

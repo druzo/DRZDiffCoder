@@ -8,17 +8,7 @@ pub struct DrzApp {
 }
 
 impl DrzApp {
-    pub fn new(mut vm: AppViewModel, cc: &eframe::CreationContext<'_>) -> DrzApp {
-        let ctx = cc.egui_ctx.clone();
-        let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(move || ctx.request_repaint());
-        if let Some(d) = vm.diff_mut() {
-            d.set_repaint_callback(repaint);
-        }
-        DrzApp {
-            vm,
-            diff_view: DiffView::new(),
-        }
-    }
+
 
     fn open_dialogs(&mut self) {
         let left = rfd::FileDialog::new().set_title("Left file").pick_file();

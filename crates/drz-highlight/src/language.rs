@@ -21,6 +21,18 @@ impl LanguageId {
             _ => LanguageId::PlainText,
         }
     }
+
+    /// Short human-readable label for UI display.
+    pub fn label(self) -> &'static str {
+        match self {
+            LanguageId::Rust => "Rust",
+            LanguageId::Python => "Python",
+            LanguageId::JavaScript => "JavaScript",
+            LanguageId::C => "C",
+            LanguageId::Cpp => "C++",
+            LanguageId::PlainText => "Text",
+        }
+    }
 }
 
 #[cfg(test)]

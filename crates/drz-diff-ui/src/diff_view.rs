@@ -54,7 +54,32 @@ impl DiffView {
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
 
         let full = ui.available_rect_before_wrap();
-        let (left_rect, strip_rect, right_rect) = pane_rects(full, STRIP_WIDTH);
+        // Reserve a header row above each pane — file name + line count.
+        const HEADER_H: f32 = 28.0;
+        let panes_full = egui::Rect::from_min_max(
+            egui::pos2(full.left(), full.top() + HEADER_H),
+            egui::pos2(full.right(), full.bottom()),
+        );
+        let (left_rect, strip_rect, right_rect) = pane_rects(panes_full, STRIP_WIDTH);
+
+        // Pane headers.
+        paint_pane_header(
+            ui,
+            egui::Rect::from_min_size(full.min, egui::vec2(left_rect.width(), HEADER_H)),
+            vm.left().path(),
+            vm.left().len_lines(),
+            true,
+        );
+        paint_pane_header(
+            ui,
+            egui::Rect::from_min_max(
+                egui::pos2(strip_rect.right(), full.top()),
+                egui::pos2(right_rect.right(), full.top() + HEADER_H),
+            ),
+            vm.right().path(),
+            vm.right().len_lines(),
+            false,
+        );
 
         // Reserve all three rects in the parent layout so the cursor advances.
         ui.allocate_rect(left_rect, egui::Sense::hover());
@@ -105,6 +130,91 @@ impl DiffView {
             Some(&self.right_decors),
         );
     }
+}
+
+/// Paint a small header bar above each pane: colored side tag + file name +
+/// line count. Subtle, doesn't compete with the code.
+fn paint_pane_header(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    path: Option<&std::path::Path>,
+    line_count: usize,
+    is_left: bool,
+) {
+    let dark = ui.visuals().dark_mode;
+    let bg = if dark {
+        egui::Color32::from_rgb(20, 26, 50)
+    } else {
+        egui::Color32::from_rgb(245, 246, 250)
+    };
+    let accent = if is_left {
+        egui::Color32::from_rgb(34, 211, 238)
+    } else {
+        egui::Color32::from_rgb(232, 121, 249)
+    };
+    let text = if dark {
+        egui::Color32::from_rgb(220, 223, 232)
+    } else {
+        egui::Color32::from_rgb(28, 32, 48)
+    };
+    let dim = if dark {
+        egui::Color32::from_rgb(148, 156, 178)
+    } else {
+        egui::Color32::from_rgb(96, 102, 120)
+    };
+
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, bg);
+    painter.rect_filled(
+        egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 1.0)),
+        0.0,
+        if dark {
+            egui::Color32::from_rgba_unmultiplied(80, 90, 130, 100)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30)
+        },
+    );
+
+    let tag = if is_left { "L" } else { "R" };
+    let tag_pos = egui::pos2(rect.left() + 14.0, rect.top() + 6.0);
+    painter.text(
+        tag_pos,
+        egui::Align2::LEFT_TOP,
+        tag,
+        egui::FontId::monospace(11.0),
+        accent,
+    );
+
+    let name = path
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "(untitled)".into());
+    let name_x = rect.left() + 30.0;
+    painter.text(
+        egui::pos2(name_x, rect.top() + 6.0),
+        egui::Align2::LEFT_TOP,
+        &name,
+        egui::FontId::monospace(12.0),
+        text,
+    );
+
+    let count_str = format!("{line_count} lines");
+    let text_w = painter
+        .layout(
+            count_str.clone(),
+            egui::FontId::proportional(11.0),
+            dim,
+            f32::INFINITY,
+        )
+        .size()
+        .x;
+    painter.text(
+        egui::pos2(rect.right() - 14.0 - text_w, rect.top() + 8.0),
+        egui::Align2::LEFT_TOP,
+        count_str,
+        egui::FontId::proportional(11.0),
+        dim,
+    );
 }
 
 /// Decode PNG bytes into an egui texture. Returns `None` on decode error so
@@ -214,7 +324,16 @@ impl DiffView {
         vm: &mut DiffViewModel,
     ) {
         let mut intents: Vec<(usize, MergeDirection)> = Vec::new();
+        let dark = ui.visuals().dark_mode;
         let painter = ui.painter_at(strip_rect);
+
+        let band_fill = egui::Color32::from_rgba_unmultiplied(
+            34,
+            211,
+            238,
+            if dark { 50 } else { 36 },
+        );
+        let band_edge = egui::Color32::from_rgb(34, 211, 238);
 
         for (idx, hunk) in hunks.iter().enumerate() {
             let span = hunk_row_span(alignment, hunk);
@@ -230,19 +349,28 @@ impl DiffView {
                 egui::pos2(strip_rect.left(), y0),
                 egui::pos2(strip_rect.right(), y1),
             );
+            painter.rect_filled(band, egui::CornerRadius::same(3), band_fill);
+            // accent edge stripe on the left of the band
             painter.rect_filled(
-                band,
-                2.0,
-                egui::Color32::from_rgba_unmultiplied(255, 196, 0, 40),
+                egui::Rect::from_min_size(
+                    band.min,
+                    egui::vec2(2.0, band.height()),
+                ),
+                egui::CornerRadius::same(1),
+                band_edge,
             );
 
             // merge buttons centered in the band (clamped into the strip)
-            let mid_y = ((y0 + y1) / 2.0).clamp(strip_rect.top() + 8.0, strip_rect.bottom() - 8.0);
-            let btn = egui::vec2(26.0, 16.0);
-            let to_right =
-                egui::Rect::from_center_size(egui::pos2(strip_rect.left() + 14.0, mid_y), btn);
-            let to_left =
-                egui::Rect::from_center_size(egui::pos2(strip_rect.right() - 14.0, mid_y), btn);
+            let mid_y = ((y0 + y1) / 2.0).clamp(strip_rect.top() + 10.0, strip_rect.bottom() - 10.0);
+            let btn = egui::vec2(22.0, 18.0);
+            let to_right = egui::Rect::from_center_size(
+                egui::pos2(strip_rect.center().x - 12.0, mid_y),
+                btn,
+            );
+            let to_left = egui::Rect::from_center_size(
+                egui::pos2(strip_rect.center().x + 12.0, mid_y),
+                btn,
+            );
 
             if ui
                 .put(to_right, self.make_arrow_button(true))
@@ -266,7 +394,7 @@ impl DiffView {
     }
 
     /// Build a merge-arrow button using the embedded PNG icon (26x22 source
-    /// rendered at 13x11 to fit the 26x16 button rect), falling back to the
+    /// rendered at 14x12 to fit the 22x18 button rect), falling back to the
     /// text arrow glyph if texture decoding failed.
     fn make_arrow_button(&self, right: bool) -> egui::Button<'static> {
         let tex = if right {
@@ -275,8 +403,12 @@ impl DiffView {
             self.arrow_left.as_ref()
         };
         match tex {
-            Some(t) => egui::Button::image((t.id(), egui::vec2(13.0, 11.0))).small(),
-            None => egui::Button::new(if right { "\u{2192}" } else { "\u{2190}" }).small(),
+            Some(t) => egui::Button::image((t.id(), egui::vec2(14.0, 12.0)))
+                .corner_radius(egui::CornerRadius::same(4))
+                .min_size(egui::vec2(22.0, 18.0)),
+            None => egui::Button::new(if right { "\u{2192}" } else { "\u{2190}" })
+                .corner_radius(egui::CornerRadius::same(4))
+                .min_size(egui::vec2(22.0, 18.0)),
         }
     }
 }

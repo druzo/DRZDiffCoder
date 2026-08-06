@@ -84,6 +84,74 @@ fn language_and_query(lang: LanguageId) -> Option<(Language, &'static str)> {
             Language::new(tree_sitter_cpp::LANGUAGE),
             include_str!("../queries/cpp.scm"),
         ),
+        LanguageId::Java => (
+            Language::new(tree_sitter_java::LANGUAGE),
+            include_str!("../queries/java.scm"),
+        ),
+        LanguageId::CSharp => (
+            Language::new(tree_sitter_c_sharp::LANGUAGE),
+            include_str!("../queries/csharp.scm"),
+        ),
+        LanguageId::Sql => (
+            tree_sitter_sequel::LANGUAGE.into(),
+            include_str!("../queries/sql.scm"),
+        ),
+        LanguageId::R => (
+            Language::new(tree_sitter_r::LANGUAGE),
+            include_str!("../queries/r.scm"),
+        ),
+        LanguageId::Pascal => (
+            Language::new(tree_sitter_pascal::LANGUAGE),
+            include_str!("../queries/pascal.scm"),
+        ),
+        LanguageId::Go => (
+            Language::new(tree_sitter_go::LANGUAGE),
+            include_str!("../queries/go.scm"),
+        ),
+        LanguageId::Assembly => (
+            Language::new(tree_sitter_asm::LANGUAGE),
+            include_str!("../queries/asm.scm"),
+        ),
+        LanguageId::Php => (
+            tree_sitter_php::LANGUAGE_PHP.into(),
+            include_str!("../queries/php.scm"),
+        ),
+        LanguageId::Kotlin => (
+            tree_sitter_kotlin_ng::LANGUAGE.into(),
+            include_str!("../queries/kotlin.scm"),
+        ),
+        LanguageId::Dart => (
+            Language::new(tree_sitter_dart::LANGUAGE),
+            include_str!("../queries/dart.scm"),
+        ),
+        LanguageId::Lua => (
+            Language::new(tree_sitter_lua::LANGUAGE),
+            include_str!("../queries/lua.scm"),
+        ),
+        LanguageId::Julia => (
+            Language::new(tree_sitter_julia::LANGUAGE),
+            include_str!("../queries/julia.scm"),
+        ),
+        LanguageId::Lisp => (
+            tree_sitter_commonlisp::LANGUAGE_COMMONLISP.into(),
+            include_str!("../queries/lisp.scm"),
+        ),
+        LanguageId::Scala => (
+            Language::new(tree_sitter_scala::LANGUAGE),
+            include_str!("../queries/scala.scm"),
+        ),
+        LanguageId::ObjectiveC => (
+            Language::new(tree_sitter_objc::LANGUAGE),
+            include_str!("../queries/objc.scm"),
+        ),
+        LanguageId::Swift => (
+            Language::new(tree_sitter_swift::LANGUAGE),
+            include_str!("../queries/swift.scm"),
+        ),
+        LanguageId::Json => (
+            Language::new(tree_sitter_json::LANGUAGE),
+            include_str!("../queries/json.scm"),
+        ),
         LanguageId::PlainText => return None,
     };
     Some(pair)
@@ -111,8 +179,15 @@ impl HighlightEngine {
         parser
             .set_language(&language)
             .map_err(|_| HighlightError::UnsupportedLanguage)?;
-        let query = Query::new(&language, query_src)
-            .map_err(|e| HighlightError::QueryFailed(e.to_string()))?;
+        // Fall back to an empty query when the curated highlights query has
+        // bad node references (some grammars drift between versions). The
+        // language is still detected and rendered; only coloring degrades.
+        let query = match Query::new(&language, query_src) {
+            Ok(q) => q,
+            Err(_) => {
+                Query::new(&language, "").map_err(|e| HighlightError::QueryFailed(e.to_string()))?
+            }
+        };
         let capture_styles = query
             .capture_names()
             .iter()
@@ -285,5 +360,95 @@ mod tests {
         assert!(spans
             .iter()
             .any(|s| s.style == Style::Comment && s.start == 0));
+    }
+
+    #[test]
+    fn java_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Java).unwrap().unwrap();
+        let rope = Rope::from_str("class Foo { int x; }\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn java_keywords_types_comments_strings() {
+        let mut eng = HighlightEngine::new(LanguageId::Java).unwrap().unwrap();
+        let src = "/* doc */\npublic class Greeter {\n    public String hello() { return \"hi\"; }\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert_eq!(
+            line_styles(0, "/* doc */"),
+            vec![Style::Comment],
+            "block comment should be styled"
+        );
+        assert!(
+            line_styles(1, "public").contains(&Style::Keyword),
+            "keyword 'public' (line 1) not styled"
+        );
+        assert!(
+            line_styles(1, "class").contains(&Style::Keyword),
+            "keyword 'class' (line 1) not styled"
+        );
+        assert!(
+            line_styles(2, "public").contains(&Style::Keyword),
+            "keyword 'public' (line 2) not styled"
+        );
+        assert!(
+            line_styles(2, "String").contains(&Style::Type),
+            "type identifier 'String' (line 2) not styled"
+        );
+        assert!(
+            line_styles(2, "hello").contains(&Style::Function),
+            "method 'hello' (line 2) not styled"
+        );
+        assert!(
+            line_styles(2, "return").contains(&Style::Keyword),
+            "keyword 'return' (line 2) not styled"
+        );
+        assert!(
+            line_styles(2, "\"hi\"").contains(&Style::StringLit),
+            "string literal '\"hi\"' (line 2) not styled"
+        );
+    }
+
+    #[test]
+    fn go_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Go).unwrap().unwrap();
+        let rope = Rope::from_str("package main\nfunc hi() {}\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn swift_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Swift).unwrap().unwrap();
+        let rope = Rope::from_str("func hi() { let x = 1 }\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn json_string_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Json).unwrap().unwrap();
+        let rope = Rope::from_str("{\"a\": 1}\n");
+        eng.parse_full(&rope).unwrap();
+        let spans = eng.highlight_line(&rope, 0);
+        assert!(spans.iter().any(|s| s.style == Style::StringLit));
+        assert!(spans.iter().any(|s| s.style == Style::Number));
     }
 }

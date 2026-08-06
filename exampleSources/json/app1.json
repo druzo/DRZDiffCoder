@@ -1,0 +1,16 @@
+{
+  "name": "drzdiff",
+  "version": "0.1.0",
+  "description": "Source-code diff comparer",
+  "scripts": {
+    "build": "cargo build --workspace",
+    "test":  "cargo test --workspace",
+    "lint":  "cargo clippy --workspace --all-targets -- -D warnings",
+    "fmt":   "cargo fmt --all"
+  },
+  "keywords": ["diff", "egui", "tree-sitter"],
+  "languages": {
+    "primary":   "rust",
+    "supported": ["rust", "python", "javascript", "go", "java"]
+  }
+}

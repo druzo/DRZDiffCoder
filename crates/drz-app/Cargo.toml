@@ -15,6 +15,9 @@ egui.workspace = true
 clap.workspace = true
 rfd.workspace = true
 image.workspace = true
+resvg.workspace = true
+usvg.workspace = true
+tiny-skia.workspace = true
 drz-viewmodel = { path = "../drz-viewmodel" }
 drz-diff-ui = { path = "../drz-diff-ui" }
 

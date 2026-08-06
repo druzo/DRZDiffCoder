@@ -1,8 +1,49 @@
 use eframe::egui;
 
+const ICON_STROKE: &str = "#E879F9";
+
 /// PNG bytes for the app icon, embedded at compile time so the binary is
 /// self-contained and works regardless of CWD / install layout.
 const APP_ICON_PNG: &[u8] = include_bytes!("../../../icons/AppIcon.png");
+
+/// Per-language SVG icons. Tabler does not ship brand glyphs for every
+/// language; entries marked `GENERIC` fall back to the generic code
+/// glyph. `PlainText` is intentionally absent — caller renders nothing.
+macro_rules! lang_svg {
+    ($name:literal) => {
+        include_bytes!(concat!("../../../icons/lang/", $name, ".svg"))
+    };
+}
+
+const LANG_ICONS: &[(&str, &[u8])] = &[
+    ("python", lang_svg!("python")),
+    ("rust", lang_svg!("rust")),
+    ("javascript", lang_svg!("javascript")),
+    ("go", lang_svg!("go")),
+    ("kotlin", lang_svg!("kotlin")),
+    ("php", lang_svg!("php")),
+    ("swift", lang_svg!("swift")),
+    ("csharp", lang_svg!("csharp")),
+    ("sql", lang_svg!("sql")),
+    ("json", lang_svg!("json")),
+    ("java", lang_svg!("generic")),
+    ("r", lang_svg!("generic")),
+    ("pascal", lang_svg!("generic")),
+    ("assembly", lang_svg!("generic")),
+    ("dart", lang_svg!("generic")),
+    ("lua", lang_svg!("generic")),
+    ("julia", lang_svg!("generic")),
+    ("lisp", lang_svg!("generic")),
+    ("scala", lang_svg!("generic")),
+    ("objc", lang_svg!("generic")),
+];
+
+fn svg_for(label: &str) -> Option<&'static [u8]> {
+    LANG_ICONS
+        .iter()
+        .find(|(k, _)| *k == label)
+        .map(|(_, v)| *v)
+}
 
 /// Decode the embedded AppIcon into RGBA bytes + dimensions for the OS
 /// window icon. Falls back to a tiny solid-color icon if decoding fails so
@@ -22,6 +63,35 @@ pub fn load_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     let (w, h) = (img.width() as usize, img.height() as usize);
     let color = egui::ColorImage::from_rgba_unmultiplied([w, h], img.as_raw());
     Some(ctx.load_texture("drz_app_icon", color, egui::TextureOptions::LINEAR))
+}
+
+/// Render an embedded SVG to an egui texture handle at `pixel_size × pixel_size`.
+/// Recolors strokes/fills to `ICON_STROKE` (the toolbar magenta accent) so
+/// brand icons match the surrounding UI palette. `None` if parse / render
+/// fails — caller falls back to text-only label.
+pub fn render_language_icon(
+    ctx: &egui::Context,
+    label: &str,
+    pixel_size: u32,
+) -> Option<egui::TextureHandle> {
+    let bytes = svg_for(label)?;
+    let source = std::str::from_utf8(bytes).ok()?;
+    let recolored = source
+        .replace("stroke=\"black\"", &format!("stroke=\"{ICON_STROKE}\""))
+        .replace("stroke=\"white\"", &format!("stroke=\"{ICON_STROKE}\""))
+        .replace("fill=\"black\"", &format!("fill=\"{ICON_STROKE}\""))
+        .replace("fill=\"white\"", &format!("fill=\"{ICON_STROKE}\""));
+    let tree = usvg::Tree::from_str(&recolored, &usvg::Options::default()).ok()?;
+    let size = pixel_size as f32;
+    let transform = tiny_skia::Transform::from_scale(size / 24.0, size / 24.0);
+    let mut pixmap = tiny_skia::Pixmap::new(pixel_size, pixel_size)?;
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    let color = egui::ColorImage::from_rgba_unmultiplied(
+        [pixel_size as usize, pixel_size as usize],
+        pixmap.data(),
+    );
+    let name = format!("drz_lang_{label}");
+    Some(ctx.load_texture(name, color, egui::TextureOptions::LINEAR))
 }
 
 /// Self-install desktop integration on Linux: writes the embedded PNG to

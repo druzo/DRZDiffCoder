@@ -1,12 +1,40 @@
 use crate::theme;
 use crate::welcome::WelcomeView;
 use drz_diff_ui::DiffView;
-use drz_viewmodel::AppViewModel;
+use drz_viewmodel::{AppViewModel, LanguageId};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// PNG bytes for the toolbar Swap button (32×27, white bidirectional arrows
 /// on transparent). Embedded so the binary is self-contained.
 const SWAP_ICON_PNG: &[u8] = include_bytes!("../../../icons/rectangle.2.swap.png");
+
+/// Language keys whose icons we pre-render at startup. The map key is the
+/// lowercased `LanguageId::label()` slug so we can look up by the same
+/// label the toolbar already shows.
+const LANGUAGE_KEYS: &[&str] = &[
+    "generic",
+    "java",
+    "csharp",
+    "sql",
+    "r",
+    "pascal",
+    "go",
+    "assembly",
+    "php",
+    "kotlin",
+    "dart",
+    "lua",
+    "julia",
+    "lisp",
+    "scala",
+    "objc",
+    "swift",
+    "json",
+    "python",
+    "rust",
+    "javascript",
+];
 
 pub struct DrzApp {
     vm: AppViewModel,
@@ -17,6 +45,8 @@ pub struct DrzApp {
     /// Toolbar Swap-button icon. `None` if PNG decoding failed; toolbar
     /// falls back to the text glyph.
     swap_icon: Option<egui::TextureHandle>,
+    /// Pre-rendered language icon textures keyed by lowercased label slug.
+    lang_textures: HashMap<String, Option<egui::TextureHandle>>,
     dark: bool,
 }
 
@@ -33,11 +63,13 @@ impl DrzApp {
         }
         let brand_icon = crate::icon::load_texture(&cc.egui_ctx);
         let swap_icon = load_swap_icon(&cc.egui_ctx);
+        let lang_textures = build_lang_textures(&cc.egui_ctx);
         DrzApp {
             vm,
             diff_view: DiffView::new(),
             brand_icon,
             swap_icon,
+            lang_textures,
             dark,
         }
     }
@@ -82,11 +114,49 @@ impl DrzApp {
             .unwrap_or(false)
     }
 
-    fn detect_language(vm: &AppViewModel) -> Option<&'static str> {
+    fn detect_language(vm: &AppViewModel) -> Option<LanguageId> {
         let p = vm
             .diff()
             .and_then(|d| d.right().path().or_else(|| d.left().path()))?;
-        Some(drz_viewmodel::LanguageId::from_path(p).label())
+        Some(drz_viewmodel::LanguageId::from_path(p))
+    }
+}
+
+fn build_lang_textures(ctx: &egui::Context) -> HashMap<String, Option<egui::TextureHandle>> {
+    LANGUAGE_KEYS
+        .iter()
+        .map(|key| {
+            let tex = crate::icon::render_language_icon(ctx, key, 18);
+            ((*key).to_string(), tex)
+        })
+        .collect()
+}
+
+fn lang_icon_key(lang: LanguageId) -> &'static str {
+    match lang {
+        LanguageId::Java => "java",
+        LanguageId::CSharp => "csharp",
+        LanguageId::Sql => "sql",
+        LanguageId::R => "r",
+        LanguageId::Pascal => "pascal",
+        LanguageId::Go => "go",
+        LanguageId::Assembly => "assembly",
+        LanguageId::Php => "php",
+        LanguageId::Kotlin => "kotlin",
+        LanguageId::Dart => "dart",
+        LanguageId::Lua => "lua",
+        LanguageId::Julia => "julia",
+        LanguageId::Lisp => "lisp",
+        LanguageId::Scala => "scala",
+        LanguageId::ObjectiveC => "objc",
+        LanguageId::Swift => "swift",
+        LanguageId::Json => "json",
+        LanguageId::Rust => "rust",
+        LanguageId::Python => "python",
+        LanguageId::JavaScript => "javascript",
+        LanguageId::Cpp => "generic",
+        LanguageId::C => "generic",
+        LanguageId::PlainText => "generic",
     }
 }
 
@@ -152,12 +222,14 @@ impl eframe::App for DrzApp {
         // Clone handles so the borrow on `self` ends before constructing
         // the action closure (which also borrows `self` mutably).
         let swap_icon = self.swap_icon.clone();
+        let lang_textures = self.lang_textures.clone();
         paint_toolbar(
             ctx,
             self.vm.diff().is_some(),
             self.any_dirty(),
             Self::detect_language(&self.vm),
             swap_icon.as_ref(),
+            &lang_textures,
             &mut |action| match action {
                 ToolAction::Open => self.open_dialogs(),
                 ToolAction::Save => self.vm.save_all(),
@@ -302,8 +374,9 @@ fn paint_toolbar(
     ctx: &egui::Context,
     has_diff: bool,
     dirty: bool,
-    language: Option<&'static str>,
+    language: Option<LanguageId>,
     swap_icon: Option<&egui::TextureHandle>,
+    lang_textures: &HashMap<String, Option<egui::TextureHandle>>,
     on_action: &mut dyn FnMut(ToolAction),
 ) {
     let frame = egui::Frame::default()
@@ -398,8 +471,14 @@ fn paint_toolbar(
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(lang) = language {
+                        let key = lang_icon_key(lang);
+                        let label = lang.label();
+                        if let Some(Some(tex)) = lang_textures.get(key) {
+                            ui.image((tex.id(), egui::vec2(18.0, 18.0)));
+                            ui.add_space(4.0);
+                        }
                         ui.label(
-                            egui::RichText::new(format!(" {lang} "))
+                            egui::RichText::new(format!(" {label} "))
                                 .size(11.0)
                                 .color(egui::Color32::from_rgb(232, 121, 249)),
                         );

@@ -118,7 +118,33 @@ cd darwin-arm64 && bash install.sh
 \`\`\`bash
 sha256sum -c SHA256SUMS
 \`\`\`
+
+## Release notes
+
+See \`RELEASE-NOTES.md\` (mirrored from \`docs/superpowers/specs/<version>-notes.md\`).
 EOF
+
+# 5b. Copy release notes into the release folder --------------------------
+# Look for a notes file matching this VERSION in docs/superpowers/specs/.
+# If found, copy it into releases/<VER>/RELEASE-NOTES.md. If multiple
+# matches exist, prefer an exact version match.
+NOTES_SRC=""
+for notes in "${REPO_ROOT}/docs/superpowers/specs/"*"-notes.md" \
+             "${REPO_ROOT}/docs/superpowers/specs/"*"-release-notes.md"; do
+  [ -f "$notes" ] || continue
+  base=$(basename "$notes")
+  if [ "$base" = "${VERSION}-notes.md" ] || [ "$base" = "${VERSION}-release-notes.md" ]; then
+    NOTES_SRC="$notes"
+    break
+  fi
+  [ -z "$NOTES_SRC" ] && NOTES_SRC="$notes"
+done
+if [ -n "$NOTES_SRC" ]; then
+  cp "$NOTES_SRC" "releases/${VERSION}/RELEASE-NOTES.md"
+  echo "[release] copied release notes from $NOTES_SRC"
+else
+  echo "[release] no release notes file found in docs/superpowers/specs/" >&2
+fi
 
 echo "[release] all done"
 echo "  output: releases/${VERSION}/"

@@ -1067,4 +1067,181 @@ $n = null;
             "keyword 'if' not styled"
         );
     }
+
+    #[test]
+    fn scala_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Scala).unwrap().unwrap();
+        let rope = Rope::from_str("object Main extends App { def main(args: Array[String]) = {} }\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn scala_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Scala).unwrap().unwrap();
+        let src = "// comment\nval x = 42\nval s = \"hello\"\nval b = true\nval n = null\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "// comment").contains(&Style::Comment),
+            "scala line comment not styled"
+        );
+        assert!(
+            line_styles(1, "val").contains(&Style::Keyword),
+            "keyword 'val' not styled"
+        );
+        assert!(
+            line_styles(1, "42").contains(&Style::Number),
+            "number '42' not styled"
+        );
+        assert!(
+            line_styles(2, "\"hello\"").contains(&Style::StringLit),
+            "scala string literal not styled"
+        );
+        assert!(
+            line_styles(3, "true").contains(&Style::Constant),
+            "boolean 'true' not styled as constant"
+        );
+    }
+
+    #[test]
+    fn scala_functions_classes_control_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Scala).unwrap().unwrap();
+        let src = "class Foo {\n  def bar(): Int = {\n    if (true) return 1\n    else return 0\n  }\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "class").contains(&Style::Keyword),
+            "keyword 'class' not styled"
+        );
+        assert!(
+            line_styles(1, "def").contains(&Style::Keyword),
+            "keyword 'def' not styled"
+        );
+        assert!(
+            line_styles(2, "if").contains(&Style::Keyword),
+            "keyword 'if' not styled"
+        );
+        assert!(
+            line_styles(2, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+    }
+
+    #[test]
+    fn sql_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::Sql).unwrap().unwrap();
+        let rope = Rope::from_str("SELECT * FROM users;\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn sql_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Sql).unwrap().unwrap();
+        let src = "-- comment\nSELECT id FROM users WHERE age > 18;\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "-- comment").contains(&Style::Comment),
+            "sql line comment not styled"
+        );
+        assert!(
+            line_styles(1, "SELECT").contains(&Style::Keyword),
+            "keyword 'SELECT' not styled"
+        );
+        assert!(
+            line_styles(1, "FROM").contains(&Style::Keyword),
+            "keyword 'FROM' not styled"
+        );
+        assert!(
+            line_styles(1, "WHERE").contains(&Style::Keyword),
+            "keyword 'WHERE' not styled"
+        );
+    }
+
+    #[test]
+    fn sql_types_and_functions_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::Sql).unwrap().unwrap();
+        let src = "CREATE TABLE users (id INT, name VARCHAR(100));\nSELECT COUNT(*) FROM users;\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "CREATE").contains(&Style::Keyword),
+            "keyword 'CREATE' not styled"
+        );
+        assert!(
+            line_styles(0, "TABLE").contains(&Style::Keyword),
+            "keyword 'TABLE' not styled"
+        );
+        assert!(
+            line_styles(0, "INT").contains(&Style::Type),
+            "type 'INT' not styled"
+        );
+        assert!(
+            line_styles(1, "COUNT").contains(&Style::Keyword)
+                || line_styles(1, "FROM").contains(&Style::Keyword),
+            "sql SELECT clause should be styled"
+        );
+    }
 }

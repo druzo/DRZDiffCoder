@@ -518,6 +518,69 @@ mod tests {
     }
 
     #[test]
+    fn kotlin_keywords_types_functions_strings() {
+        let mut eng = HighlightEngine::new(LanguageId::Kotlin).unwrap().unwrap();
+        let src = "// comment\nclass Greeter(val name: String) {\n    fun hello(): String { return \"hi\" }\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let mut all_spans: Vec<(usize, usize, Style)> = Vec::new();
+        for i in 0..rope.len_lines() {
+            let line_start = rope.line_to_byte(i);
+            for s in eng.highlight_line(&rope, i) {
+                all_spans.push((line_start + s.start, line_start + s.end, s.style));
+            }
+        }
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "// comment").contains(&Style::Comment),
+            "kotlin line comment not styled"
+        );
+        assert!(
+            line_styles(1, "class").contains(&Style::Keyword),
+            "keyword 'class' not styled"
+        );
+        assert!(
+            line_styles(1, "Greeter").contains(&Style::Type),
+            "class name 'Greeter' not styled as type"
+        );
+        assert!(
+            line_styles(1, "String").contains(&Style::Type),
+            "type 'String' not styled"
+        );
+        assert!(
+            line_styles(2, "fun").contains(&Style::Keyword),
+            "keyword 'fun' not styled"
+        );
+        assert!(
+            line_styles(2, "hello").contains(&Style::Function),
+            "method 'hello' not styled as function"
+        );
+        assert!(
+            line_styles(2, "return").contains(&Style::Keyword),
+            "keyword 'return' not styled"
+        );
+        assert!(
+            line_styles(2, "\"hi\"").contains(&Style::StringLit),
+            "string literal '\"hi\"' not styled"
+        );
+    }
+
+    #[test]
     fn pascal_keywords_types_functions_strings() {
         let mut eng = HighlightEngine::new(LanguageId::Pascal).unwrap().unwrap();
         let src = "{ comment }\nprogram Greeter;\nvar x: Integer;\nbegin\n  x := 42;\nend.\n";

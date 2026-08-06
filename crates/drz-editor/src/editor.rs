@@ -220,7 +220,6 @@ impl CodeEditor {
                 }
                 if let Some(pos) = response.interact_pointer_pos() {
                     let row = ((pos.y - rect.top()) / row_height).floor() as usize;
-                    let col = x_to_col(pos.x - rect.left() - gutter_width, char_width);
                     // On a padding row the line_of_row closure returns
                     // None; clamp to the last valid line so a stale
                     // cursor (potentially == len_lines) can't survive
@@ -231,6 +230,28 @@ impl CodeEditor {
                     };
                     let (span_start, span_end) = vm.line_byte_range(line);
                     let line_len = span_end - span_start;
+                    // Hit-test real glyph positions instead of assuming a
+                    // uniform char grid: a plain single-section galley has the
+                    // same glyph layout as the styled one (same font/size), so
+                    // clicks always land on the correct byte column — including
+                    // the position past the last character.
+                    let line_text = vm.line(line);
+                    let col = {
+                        let plain = ui.fonts(|f| {
+                            f.layout_no_wrap(
+                                line_text.clone(),
+                                font_id.clone(),
+                                egui::Color32::WHITE,
+                            )
+                        });
+                        let rel_x = (pos.x - rect.left() - gutter_width).max(0.0);
+                        let char_idx = plain.rows.first().map(|r| r.char_at(rel_x)).unwrap_or(0);
+                        line_text
+                            .chars()
+                            .take(char_idx)
+                            .map(|c| c.len_utf8())
+                            .sum::<usize>()
+                    };
                     let clamped_col = clamp_col(col, line_len);
 
                     if response.drag_started() {
@@ -291,6 +312,8 @@ impl CodeEditor {
                     self.drag_anchor = None;
                 }
 
+                let row_of_line =
+                    |target: usize| display_row_of_line(line_of_row, total_rows, target);
                 if response.has_focus() {
                     self.handle_keys(
                         ui,
@@ -299,6 +322,7 @@ impl CodeEditor {
                         visible_first,
                         visible_last,
                         row_height,
+                        &row_of_line,
                     );
                 }
 
@@ -526,11 +550,29 @@ impl CodeEditor {
                     // cursor: 500ms half-period blink, only when focused and
                     // on this row. request_repaint keeps the animation
                     // ticking even when nothing else invalidates the frame.
+                    // The x position comes from the real glyph layout (via a
+                    // plain galley with the same font), not `col * char_width`,
+                    // so the caret lands exactly after the last character even
+                    // when glyph metrics differ from the nominal char width.
                     if focused && self.cursor.0 == line {
                         let time = ui.ctx().input(|i| i.time);
                         let blink_on = (time % 1.0) < 0.5;
                         if blink_on {
-                            let cx = rect.left() + gutter_width + self.cursor.1 as f32 * char_width;
+                            let plain = ui.fonts(|f| {
+                                f.layout_no_wrap(
+                                    text.clone(),
+                                    font_id.clone(),
+                                    egui::Color32::WHITE,
+                                )
+                            });
+                            let byte_col = floor_col_boundary(&text, self.cursor.1);
+                            let char_idx = text[..byte_col].chars().count();
+                            let xoff = plain
+                                .rows
+                                .first()
+                                .map(|r| r.x_offset(char_idx))
+                                .unwrap_or(0.0);
+                            let cx = rect.left() + gutter_width + xoff;
                             painter.vline(
                                 cx,
                                 y..=y + row_height,
@@ -606,6 +648,7 @@ impl CodeEditor {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_keys(
         &mut self,
         ui: &mut egui::Ui,
@@ -614,6 +657,7 @@ impl CodeEditor {
         visible_first: usize,
         visible_last: usize,
         row_height: f32,
+        row_of_line: &(dyn Fn(usize) -> usize + '_),
     ) {
         use drz_viewmodel::Selection;
 
@@ -664,7 +708,7 @@ impl CodeEditor {
                     self.cursor = (line, col);
                     ensure_line_visible(
                         scroll_target,
-                        line,
+                        row_of_line(line),
                         row_height,
                         visible_first,
                         visible_last,
@@ -737,7 +781,7 @@ impl CodeEditor {
                     self.cursor = (line, col);
                     ensure_line_visible(
                         scroll_target,
-                        line,
+                        row_of_line(line),
                         row_height,
                         visible_first,
                         visible_last,
@@ -758,7 +802,7 @@ impl CodeEditor {
                     self.cursor = (line, col);
                     ensure_line_visible(
                         scroll_target,
-                        line,
+                        row_of_line(line),
                         row_height,
                         visible_first,
                         visible_last,
@@ -773,7 +817,7 @@ impl CodeEditor {
                     self.cursor = (line, col);
                     ensure_line_visible(
                         scroll_target,
-                        line,
+                        row_of_line(line),
                         row_height,
                         visible_first,
                         visible_last,
@@ -785,6 +829,7 @@ impl CodeEditor {
                     ..
                 } => {
                     apply_arrow_left(
+                        vm,
                         shift,
                         &mut line,
                         &mut col,
@@ -792,26 +837,35 @@ impl CodeEditor {
                         &mut self.preferred_col,
                     );
                     self.cursor = (line, col);
+                    ensure_line_visible(
+                        scroll_target,
+                        row_of_line(line),
+                        row_height,
+                        visible_first,
+                        visible_last,
+                    );
                 }
                 egui::Event::Key {
                     key: egui::Key::ArrowRight,
                     pressed: true,
                     ..
                 } => {
-                    let line_len = if line < vm.len_lines() {
-                        vm.line(line).len()
-                    } else {
-                        0
-                    };
                     apply_arrow_right(
+                        vm,
                         shift,
                         &mut line,
                         &mut col,
                         &mut self.selection,
-                        line_len,
                         &mut self.preferred_col,
                     );
                     self.cursor = (line, col);
+                    ensure_line_visible(
+                        scroll_target,
+                        row_of_line(line),
+                        row_height,
+                        visible_first,
+                        visible_last,
+                    );
                 }
                 egui::Event::Key {
                     key: egui::Key::ArrowUp,
@@ -832,7 +886,7 @@ impl CodeEditor {
                         self.cursor = (line, col);
                         ensure_line_visible(
                             scroll_target,
-                            line,
+                            row_of_line(line),
                             row_height,
                             visible_first,
                             visible_last,
@@ -858,7 +912,7 @@ impl CodeEditor {
                         self.cursor = (line, col);
                         ensure_line_visible(
                             scroll_target,
-                            line,
+                            row_of_line(line),
                             row_height,
                             visible_first,
                             visible_last,
@@ -918,7 +972,7 @@ impl CodeEditor {
                     self.cursor = (line, col);
                     ensure_line_visible(
                         scroll_target,
-                        line,
+                        row_of_line(line),
                         row_height,
                         visible_first,
                         visible_last,
@@ -943,7 +997,7 @@ impl CodeEditor {
                     self.cursor = (line, col);
                     ensure_line_visible(
                         scroll_target,
-                        line,
+                        row_of_line(line),
                         row_height,
                         visible_first,
                         visible_last,
@@ -1107,13 +1161,6 @@ pub(crate) fn snap_to_nearest_word(line: &str, col: usize) -> usize {
     col
 }
 
-pub(crate) fn x_to_col(x: f32, char_width: f32) -> usize {
-    if char_width <= 0.0 {
-        return 0;
-    }
-    (x / char_width).round().max(0.0) as usize
-}
-
 /// Pixel rectangle for an inline char range within a row.
 /// Returns `(x, width)` relative to the pane's text area (after the gutter).
 pub(crate) fn inline_rect_x(
@@ -1187,6 +1234,23 @@ pub(crate) fn page_lines_for(visible_rows: usize) -> usize {
         return 1;
     }
     ((visible_rows as f32 * 0.85).floor() as usize).max(1)
+}
+
+/// Convert a document line to its display row. In the diff view, rows and
+/// lines differ whenever padding rows sit above the cursor — scrolling must
+/// target the display row, otherwise the cursor ends up off-screen.
+/// With no mapping (plain editor) rows == lines.
+pub(crate) fn display_row_of_line(
+    line_of_row: Option<&dyn Fn(usize) -> Option<usize>>,
+    total_rows: usize,
+    line: usize,
+) -> usize {
+    match line_of_row {
+        Some(f) => (0..total_rows)
+            .find(|&r| f(r) == Some(line))
+            .unwrap_or_else(|| line.min(total_rows.saturating_sub(1))),
+        None => line,
+    }
 }
 
 /// Snap the viewport scroll target so `line` is visible. If the cursor row
@@ -1367,7 +1431,10 @@ pub(crate) fn apply_delete(
     }
 }
 
+/// ArrowLeft: move one char left; at column 0 with a previous line, wrap to
+/// the end of the previous line (terminal/fish/emacs behavior).
 pub(crate) fn apply_arrow_left(
+    vm: &EditorViewModel,
     shift: bool,
     line: &mut usize,
     col: &mut usize,
@@ -1375,43 +1442,62 @@ pub(crate) fn apply_arrow_left(
     preferred_col: &mut Option<usize>,
 ) {
     use drz_viewmodel::Selection;
+    let wraps = *col == 0 && *line > 0;
     if shift {
         if selection.is_none() {
             *selection = Some(Selection::new((*line, *col), (*line, *col)));
         }
-        if let Some(sel) = selection.as_mut() {
-            sel.cursor.1 = sel.cursor.1.saturating_sub(1);
-        }
-        *col = col.saturating_sub(1);
     } else {
         *selection = None;
-        if *col > 0 {
-            *col -= 1;
+    }
+    if wraps {
+        *line -= 1;
+        *col = vm.line(*line).len();
+    } else if *col > 0 {
+        *col -= 1;
+    }
+    if shift {
+        if let Some(sel) = selection.as_mut() {
+            sel.cursor = (*line, *col);
         }
     }
     *preferred_col = Some(*col);
 }
 
+/// ArrowRight: move one char right; at end-of-line with a following line,
+/// wrap to the start of the next line (terminal/fish/emacs behavior).
 pub(crate) fn apply_arrow_right(
+    vm: &EditorViewModel,
     shift: bool,
     line: &mut usize,
     col: &mut usize,
     selection: &mut Option<drz_viewmodel::Selection>,
-    line_len: usize,
     preferred_col: &mut Option<usize>,
 ) {
     use drz_viewmodel::Selection;
+    let line_len = if *line < vm.len_lines() {
+        vm.line(*line).len()
+    } else {
+        0
+    };
+    let wraps = *col >= line_len && *line + 1 < vm.len_lines();
     if shift {
         if selection.is_none() {
             *selection = Some(Selection::new((*line, *col), (*line, *col)));
         }
-        if let Some(sel) = selection.as_mut() {
-            sel.cursor.1 = clamp_col(sel.cursor.1 + 1, line_len);
-        }
-        *col = clamp_col(*col + 1, line_len);
     } else {
         *selection = None;
+    }
+    if wraps {
+        *line += 1;
+        *col = 0;
+    } else {
         *col = clamp_col(*col + 1, line_len);
+    }
+    if shift {
+        if let Some(sel) = selection.as_mut() {
+            sel.cursor = (*line, *col);
+        }
     }
     *preferred_col = Some(*col);
 }
@@ -1712,6 +1798,28 @@ mod tests {
         assert!(target.is_none());
     }
 
+    #[test]
+    fn display_row_of_line_identity_without_mapping() {
+        // Plain editor: rows == lines.
+        assert_eq!(display_row_of_line(None, 100, 42), 42);
+    }
+
+    #[test]
+    fn display_row_of_line_accounts_for_padding_rows() {
+        // Diff view: 2 padding rows at the top (left side), so document line L
+        // sits at display row L + 2.
+        let mapping = |row: usize| -> Option<usize> {
+            match row {
+                0 | 1 => None,
+                r => Some(r - 2),
+            }
+        };
+        assert_eq!(display_row_of_line(Some(&mapping), 10, 0), 2);
+        assert_eq!(display_row_of_line(Some(&mapping), 10, 5), 7);
+        // Line with no row (shouldn't happen) clamps into range.
+        assert_eq!(display_row_of_line(Some(&mapping), 10, 99), 9);
+    }
+
     // -----------------------------------------------------------------
     // Per-event cursor helpers
     // -----------------------------------------------------------------
@@ -1844,23 +1952,30 @@ mod tests {
 
     #[test]
     fn apply_arrow_left_at_zero_col_stays_put() {
-        let _vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
         let mut line = 0;
         let mut col = 0;
         let mut sel = fresh_selection();
         let mut preferred_col: Option<usize> = None;
-        apply_arrow_left(false, &mut line, &mut col, &mut sel, &mut preferred_col);
+        apply_arrow_left(
+            &vm,
+            false,
+            &mut line,
+            &mut col,
+            &mut sel,
+            &mut preferred_col,
+        );
         assert_eq!((line, col), (0, 0));
     }
 
     #[test]
     fn apply_arrow_left_with_shift_extends_selection() {
-        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
         let mut line = 0;
         let mut col = 5;
         let mut sel = fresh_selection();
         let mut preferred_col: Option<usize> = None;
-        apply_arrow_left(true, &mut line, &mut col, &mut sel, &mut preferred_col);
+        apply_arrow_left(&vm, true, &mut line, &mut col, &mut sel, &mut preferred_col);
         assert_eq!(col, 4);
         // Selection now covers [(0,5), (0,4)] ordered as [(0,4),(0,5)].
         let s = sel.expect("selection set");
@@ -1868,16 +1983,118 @@ mod tests {
     }
 
     #[test]
+    fn apply_arrow_left_at_line_start_wraps_to_prev_line_end() {
+        // Terminal-style wrap: col 0 on line 1 → end of line 0.
+        let vm = EditorViewModel::from_text("hello\nworld\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 1;
+        let mut col = 0;
+        let mut sel = fresh_selection();
+        let mut preferred_col: Option<usize> = None;
+        apply_arrow_left(
+            &vm,
+            false,
+            &mut line,
+            &mut col,
+            &mut sel,
+            &mut preferred_col,
+        );
+        assert_eq!((line, col), (0, 5));
+        assert!(sel.is_none());
+    }
+
+    #[test]
+    fn apply_arrow_left_wrap_with_shift_extends_selection_up() {
+        let vm = EditorViewModel::from_text("hello\nworld\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 1;
+        let mut col = 0;
+        let mut sel = fresh_selection();
+        let mut preferred_col: Option<usize> = None;
+        apply_arrow_left(&vm, true, &mut line, &mut col, &mut sel, &mut preferred_col);
+        assert_eq!((line, col), (0, 5));
+        let s = sel.expect("selection set");
+        assert_eq!(s.ordered(), ((0, 5), (1, 0)));
+    }
+
+    #[test]
     fn apply_arrow_right_clamps_to_line_end() {
-        let _vm = EditorViewModel::from_text("hi\n", drz_viewmodel::LanguageId::PlainText);
+        // No trailing newline → single line → no wrap target.
+        let vm = EditorViewModel::from_text("hi", drz_viewmodel::LanguageId::PlainText);
         let mut line = 0;
         let mut col = 2;
         let mut sel = fresh_selection();
         let mut preferred_col: Option<usize> = None;
-        apply_arrow_right(false, &mut line, &mut col, &mut sel, 2, &mut preferred_col);
-        assert_eq!(col, 2); // already at end
-        apply_arrow_right(false, &mut line, &mut col, &mut sel, 2, &mut preferred_col);
-        assert_eq!(col, 2);
+        apply_arrow_right(
+            &vm,
+            false,
+            &mut line,
+            &mut col,
+            &mut sel,
+            &mut preferred_col,
+        );
+        assert_eq!((line, col), (0, 2)); // already at end
+        apply_arrow_right(
+            &vm,
+            false,
+            &mut line,
+            &mut col,
+            &mut sel,
+            &mut preferred_col,
+        );
+        assert_eq!((line, col), (0, 2));
+    }
+
+    #[test]
+    fn apply_arrow_right_at_eol_wraps_to_next_line_start() {
+        // Terminal-style wrap: end of line 0 → start of line 1.
+        let vm = EditorViewModel::from_text("hello\nworld\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 5;
+        let mut sel = fresh_selection();
+        let mut preferred_col: Option<usize> = None;
+        apply_arrow_right(
+            &vm,
+            false,
+            &mut line,
+            &mut col,
+            &mut sel,
+            &mut preferred_col,
+        );
+        assert_eq!((line, col), (1, 0));
+        assert_eq!(preferred_col, Some(0));
+        assert!(sel.is_none());
+    }
+
+    #[test]
+    fn apply_arrow_right_wrap_with_shift_extends_selection_down() {
+        let vm = EditorViewModel::from_text("hello\nworld\n", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 5;
+        let mut sel = fresh_selection();
+        let mut preferred_col: Option<usize> = None;
+        apply_arrow_right(&vm, true, &mut line, &mut col, &mut sel, &mut preferred_col);
+        assert_eq!((line, col), (1, 0));
+        let s = sel.expect("selection set");
+        assert_eq!(s.ordered(), ((0, 5), (1, 0)));
+    }
+
+    #[test]
+    fn apply_arrow_right_on_last_line_stays_at_eol() {
+        // "hi\n" → ropey keeps phantom empty line 1; wrapping there is allowed
+        // (it's a real line the user can type on).
+        let vm = EditorViewModel::from_text("hi", drz_viewmodel::LanguageId::PlainText);
+        let mut line = 0;
+        let mut col = 1;
+        let mut sel = fresh_selection();
+        let mut preferred_col: Option<usize> = None;
+        apply_arrow_right(
+            &vm,
+            false,
+            &mut line,
+            &mut col,
+            &mut sel,
+            &mut preferred_col,
+        );
+        assert_eq!((line, col), (0, 2));
     }
 
     #[test]
@@ -2082,12 +2299,19 @@ mod tests {
 
     #[test]
     fn smart_cursor_horizontal_movement_updates_preferred_col() {
-        let mut vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
+        let vm = EditorViewModel::from_text("hello\n", drz_viewmodel::LanguageId::PlainText);
         let mut line = 0;
         let mut col = 5;
         let mut sel = fresh_selection();
         let mut preferred_col: Option<usize> = None;
-        apply_arrow_left(false, &mut line, &mut col, &mut sel, &mut preferred_col);
+        apply_arrow_left(
+            &vm,
+            false,
+            &mut line,
+            &mut col,
+            &mut sel,
+            &mut preferred_col,
+        );
         assert_eq!(col, 4);
         assert_eq!(preferred_col, Some(4));
         apply_end(false, 5, &mut line, &mut col, &mut sel, &mut preferred_col);
@@ -2175,14 +2399,6 @@ mod tests {
         ensure_line_visible(&mut target, 100, 18.0, 0, 10);
         // Vertical changed to (100+1)*18 - 10*18 = 1638; x stays at 50.
         assert_eq!(target, Some(egui::vec2(50.0, 1638.0)));
-    }
-
-    #[test]
-    fn click_x_to_col_rounds() {
-        assert_eq!(x_to_col(0.0, 8.0), 0);
-        assert_eq!(x_to_col(3.9, 8.0), 0);
-        assert_eq!(x_to_col(4.1, 8.0), 1);
-        assert_eq!(x_to_col(80.0, 8.0), 10);
     }
 
     #[test]

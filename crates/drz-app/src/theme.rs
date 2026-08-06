@@ -30,7 +30,11 @@ pub mod palette {
 /// look; `dark=false` is a clean paper-light mode with the same accents.
 pub fn drz_visuals(dark: bool) -> egui::Visuals {
     use palette as p;
-    let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    let mut v = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
 
     let (panel, surface, text, text_dim, ext_bg, weak_bg, stroke) = if dark {
         (
@@ -81,7 +85,12 @@ pub fn drz_visuals(dark: bool) -> egui::Visuals {
     );
     apply(
         &mut v.widgets.inactive,
-        egui::Color32::from_rgba_unmultiplied(text.r(), text.g(), text.b(), if dark { 18 } else { 14 }),
+        egui::Color32::from_rgba_unmultiplied(
+            text.r(),
+            text.g(),
+            text.b(),
+            if dark { 18 } else { 14 },
+        ),
         egui::Stroke::new(1.0, stroke),
         egui::Stroke::new(1.0, text),
     );
@@ -122,26 +131,18 @@ pub fn drz_visuals(dark: bool) -> egui::Visuals {
 pub fn drz_style(dark: bool) -> egui::Style {
     let mut s = egui::Style::default();
     let mono_size = 14.5;
-    s.text_styles.insert(
-        egui::TextStyle::Heading,
-        egui::FontId::proportional(22.0),
-    );
-    s.text_styles.insert(
-        egui::TextStyle::Body,
-        egui::FontId::proportional(14.0),
-    );
-    s.text_styles.insert(
-        egui::TextStyle::Button,
-        egui::FontId::proportional(13.0),
-    );
+    s.text_styles
+        .insert(egui::TextStyle::Heading, egui::FontId::proportional(22.0));
+    s.text_styles
+        .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
+    s.text_styles
+        .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
     s.text_styles.insert(
         egui::TextStyle::Monospace,
         egui::FontId::monospace(mono_size),
     );
-    s.text_styles.insert(
-        egui::TextStyle::Small,
-        egui::FontId::proportional(11.0),
-    );
+    s.text_styles
+        .insert(egui::TextStyle::Small, egui::FontId::proportional(11.0));
     s.spacing.item_spacing = egui::vec2(8.0, 6.0);
     s.spacing.button_padding = egui::vec2(10.0, 5.0);
     s.spacing.window_margin = egui::Margin::same(8);

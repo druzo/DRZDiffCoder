@@ -85,7 +85,12 @@ impl AppViewModel {
                 } else {
                     ""
                 };
-                format!("DRZ Diff — {} ↔ {}{}", name(d.left()), name(d.right()), dirty)
+                format!(
+                    "DRZ Diff — {} ↔ {}{}",
+                    name(d.left()),
+                    name(d.right()),
+                    dirty
+                )
             }
             None => "DRZ Diff".into(),
         }

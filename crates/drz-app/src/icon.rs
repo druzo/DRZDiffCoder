@@ -52,12 +52,8 @@ fn install_desktop_integration_impl() -> Result<(), Box<dyn std::error::Error>> 
             .join(format!("{size}x{size}"))
             .join("apps");
         std::fs::create_dir_all(&dir)?;
-        let resized = image::imageops::resize(
-            &rgba,
-            size,
-            size,
-            image::imageops::FilterType::Lanczos3,
-        );
+        let resized =
+            image::imageops::resize(&rgba, size, size, image::imageops::FilterType::Lanczos3);
         resized.save(dir.join("drzdiff.png"))?;
     }
 
@@ -82,19 +78,13 @@ fn install_desktop_integration_impl() -> Result<(), Box<dyn std::error::Error>> 
 
     // Refresh caches if the tools exist (ignore failures — relog also works).
     for cmd in [
-        format!(
-            "update-desktop-database {}",
-            apps_dir.display()
-        ),
+        format!("update-desktop-database {}", apps_dir.display()),
         format!(
             "gtk-update-icon-cache -q {} 2>/dev/null",
             data.join("icons/hicolor").display()
         ),
     ] {
-        let _ = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
-            .output();
+        let _ = std::process::Command::new("sh").arg("-c").arg(cmd).output();
     }
     Ok(())
 }

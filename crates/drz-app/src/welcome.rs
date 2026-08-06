@@ -6,11 +6,7 @@ use eframe::egui;
 pub struct WelcomeView;
 
 impl WelcomeView {
-    pub fn show(
-        ui: &mut egui::Ui,
-        icon: Option<&egui::TextureHandle>,
-        on_open: &mut dyn FnMut(),
-    ) {
+    pub fn show(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, on_open: &mut dyn FnMut()) {
         let dark = ui.visuals().dark_mode;
         let fg = if dark {
             egui::Color32::from_rgb(230, 233, 244)

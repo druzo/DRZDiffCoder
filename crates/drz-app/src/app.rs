@@ -47,12 +47,8 @@ impl DrzApp {
     }
 
     fn open_dialogs(&mut self) {
-        let left = rfd::FileDialog::new()
-            .set_title("Left file")
-            .pick_file();
-        let right = rfd::FileDialog::new()
-            .set_title("Right file")
-            .pick_file();
+        let left = rfd::FileDialog::new().set_title("Left file").pick_file();
+        let right = rfd::FileDialog::new().set_title("Right file").pick_file();
         if let (Some(l), Some(r)) = (left, right) {
             self.vm.open_pair_command(&l, &r);
         }
@@ -144,9 +140,14 @@ impl eframe::App for DrzApp {
 
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.vm.title()));
 
-        paint_brand_bar(ctx, self.brand_icon.as_ref(), self.dark, &mut |dark: bool| {
-            self.dark = dark;
-        });
+        paint_brand_bar(
+            ctx,
+            self.brand_icon.as_ref(),
+            self.dark,
+            &mut |dark: bool| {
+                self.dark = dark;
+            },
+        );
 
         // Clone handles so the borrow on `self` ends before constructing
         // the action closure (which also borrows `self` mutably).
@@ -199,7 +200,11 @@ impl eframe::App for DrzApp {
         if let Some(storage) = frame.storage_mut() {
             storage.set_string(
                 "drz_theme_dark",
-                if self.dark { "true".to_string() } else { "false".to_string() },
+                if self.dark {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                },
             );
         }
     }
@@ -227,9 +232,7 @@ fn load_swap_icon(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     }
     let (w, h) = (img.width() as usize, img.height() as usize);
     let color = egui::ColorImage::from_rgba_unmultiplied([w, h], img.as_raw());
-    Some(
-        ctx.load_texture("drz_swap_icon", color, egui::TextureOptions::LINEAR),
-    )
+    Some(ctx.load_texture("drz_swap_icon", color, egui::TextureOptions::LINEAR))
 }
 
 fn paint_brand_bar(
@@ -276,10 +279,8 @@ fn paint_brand_bar(
                     };
                     if ui
                         .add(
-                            egui::Button::new(
-                                egui::RichText::new(theme_label).size(16.0),
-                            )
-                            .frame(false),
+                            egui::Button::new(egui::RichText::new(theme_label).size(16.0))
+                                .frame(false),
                         )
                         .on_hover_text(tip)
                         .clicked()
@@ -337,15 +338,13 @@ fn paint_toolbar(
                 ui.add_space(6.0);
 
                 let save_enabled = has_diff && dirty;
-                let save_btn = egui::Button::new(
-                    egui::RichText::new("💾  Save")
-                        .size(13.0)
-                        .color(if save_enabled {
-                            egui::Color32::WHITE
-                        } else {
-                            egui::Color32::from_rgb(148, 156, 178)
-                        }),
-                )
+                let save_btn = egui::Button::new(egui::RichText::new("💾  Save").size(13.0).color(
+                    if save_enabled {
+                        egui::Color32::WHITE
+                    } else {
+                        egui::Color32::from_rgb(148, 156, 178)
+                    },
+                ))
                 .corner_radius(egui::CornerRadius::same(6))
                 .min_size(egui::vec2(90.0, 30.0));
                 let save_resp = ui
@@ -360,12 +359,11 @@ fn paint_toolbar(
                     .size(13.0)
                     .color(egui::Color32::WHITE);
                 let swap_btn = match swap_icon {
-                    Some(tex) => egui::Button::image_and_text(
-                        (tex.id(), egui::vec2(18.0, 15.0)),
-                        swap_label,
-                    )
-                    .corner_radius(egui::CornerRadius::same(6))
-                    .min_size(egui::vec2(110.0, 30.0)),
+                    Some(tex) => {
+                        egui::Button::image_and_text((tex.id(), egui::vec2(18.0, 15.0)), swap_label)
+                            .corner_radius(egui::CornerRadius::same(6))
+                            .min_size(egui::vec2(110.0, 30.0))
+                    }
                     None => egui::Button::new(
                         egui::RichText::new("\u{21c4}  Swap")
                             .size(13.0)
@@ -455,9 +453,7 @@ fn paint_path_bar(
                     );
                 }
                 ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new("↔").color(egui::Color32::from_rgb(148, 156, 178)),
-                );
+                ui.label(egui::RichText::new("↔").color(egui::Color32::from_rgb(148, 156, 178)));
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new("R")

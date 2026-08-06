@@ -327,12 +327,8 @@ impl DiffView {
         let dark = ui.visuals().dark_mode;
         let painter = ui.painter_at(strip_rect);
 
-        let band_fill = egui::Color32::from_rgba_unmultiplied(
-            34,
-            211,
-            238,
-            if dark { 50 } else { 36 },
-        );
+        let band_fill =
+            egui::Color32::from_rgba_unmultiplied(34, 211, 238, if dark { 50 } else { 36 });
         let band_edge = egui::Color32::from_rgb(34, 211, 238);
 
         for (idx, hunk) in hunks.iter().enumerate() {
@@ -352,25 +348,19 @@ impl DiffView {
             painter.rect_filled(band, egui::CornerRadius::same(3), band_fill);
             // accent edge stripe on the left of the band
             painter.rect_filled(
-                egui::Rect::from_min_size(
-                    band.min,
-                    egui::vec2(2.0, band.height()),
-                ),
+                egui::Rect::from_min_size(band.min, egui::vec2(2.0, band.height())),
                 egui::CornerRadius::same(1),
                 band_edge,
             );
 
             // merge buttons centered in the band (clamped into the strip)
-            let mid_y = ((y0 + y1) / 2.0).clamp(strip_rect.top() + 10.0, strip_rect.bottom() - 10.0);
+            let mid_y =
+                ((y0 + y1) / 2.0).clamp(strip_rect.top() + 10.0, strip_rect.bottom() - 10.0);
             let btn = egui::vec2(22.0, 18.0);
-            let to_right = egui::Rect::from_center_size(
-                egui::pos2(strip_rect.center().x - 12.0, mid_y),
-                btn,
-            );
-            let to_left = egui::Rect::from_center_size(
-                egui::pos2(strip_rect.center().x + 12.0, mid_y),
-                btn,
-            );
+            let to_right =
+                egui::Rect::from_center_size(egui::pos2(strip_rect.center().x - 12.0, mid_y), btn);
+            let to_left =
+                egui::Rect::from_center_size(egui::pos2(strip_rect.center().x + 12.0, mid_y), btn);
 
             if ui
                 .put(to_right, self.make_arrow_button(true))

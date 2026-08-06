@@ -1028,6 +1028,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "drz-diff-ui",
+ "drz-editor",
  "drz-viewmodel",
  "eframe",
  "egui",

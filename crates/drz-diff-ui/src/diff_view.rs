@@ -20,6 +20,25 @@ pub struct DiffView {
     arrow_left: Option<egui::TextureHandle>,
 }
 
+/// Which pane currently has keyboard focus. Used by the top-level Edit menu
+/// to route undo/redo/cut/copy/paste/select-all to the correct editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+/// Edit-menu actions the top menu dispatches into a DiffView.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditAction {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
 impl DiffView {
     pub fn new() -> DiffView {
         DiffView {
@@ -41,6 +60,46 @@ impl DiffView {
         }
         if self.arrow_left.is_none() {
             self.arrow_left = load_png_texture(ctx, "drz_arrow_left", ARROW_LEFT_PNG);
+        }
+    }
+
+    /// Which pane currently owns keyboard focus. `None` if neither.
+    /// Cached during `show()`.
+    pub fn focused_side(&self) -> Option<Side> {
+        if self.left_editor.has_focus() {
+            Some(Side::Left)
+        } else if self.right_editor.has_focus() {
+            Some(Side::Right)
+        } else {
+            None
+        }
+    }
+
+    /// True iff at least one pane has an active undo history.
+    pub fn can_undo(&self, vm: &DiffViewModel) -> bool {
+        vm.left().can_undo() || vm.right().can_undo()
+    }
+
+    /// True iff at least one pane has a redo history.
+    pub fn can_redo(&self, vm: &DiffViewModel) -> bool {
+        vm.left().can_redo() || vm.right().can_redo()
+    }
+
+    /// Dispatch an edit-menu action to the focused pane (if any). No-op when
+    /// focus is elsewhere. `ctx` is needed for clipboard write/read so the
+    /// action can complete outside the editor's own `show()` cycle.
+    pub fn dispatch_edit(
+        &mut self,
+        action: EditAction,
+        vm: &mut DiffViewModel,
+        ctx: &egui::Context,
+    ) {
+        let Some(side) = self.focused_side() else {
+            return;
+        };
+        match side {
+            Side::Left => apply_edit(&mut self.left_editor, vm.left_mut(), action, ctx),
+            Side::Right => apply_edit(&mut self.right_editor, vm.right_mut(), action, ctx),
         }
     }
 
@@ -305,6 +364,80 @@ pub(crate) fn pane_rects(full: egui::Rect, strip_w: f32) -> (egui::Rect, egui::R
 impl Default for DiffView {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Apply an edit-menu action to one pane. The editor owns the cursor +
+/// selection state, so undo/redo/cut/copy/paste/select-all all flow
+/// through the editor's own helpers (which update caret / call clipboard
+/// APIs) rather than reaching into the VM directly.
+fn apply_edit(
+    editor: &mut CodeEditor,
+    vm: &mut drz_viewmodel::EditorViewModel,
+    action: EditAction,
+    ctx: &egui::Context,
+) {
+    match action {
+        EditAction::Undo => editor.undo(vm),
+        EditAction::Redo => editor.redo(vm),
+        EditAction::Cut => {
+            if let Some(sel) = editor.selection() {
+                if sel.is_selected() {
+                    let (s, e) = sel.ordered();
+                    if s != e {
+                        let text = vm.text_in_range(s, e);
+                        ctx.copy_text(text);
+                        let (nl, nc) = vm.replace_selection_with(s, e, "");
+                        editor.set_selection(None);
+                        editor.set_cursor((nl, nc));
+                    }
+                }
+            }
+        }
+        EditAction::Copy => {
+            if let Some(sel) = editor.selection() {
+                if sel.is_selected() {
+                    let (s, e) = sel.ordered();
+                    if s != e {
+                        ctx.copy_text(vm.text_in_range(s, e));
+                    }
+                }
+            }
+        }
+        EditAction::Paste => {
+            // The editor captures `paste_text` from egui::Event::Paste. If
+            // the user hasn't pasted yet, the clipboard may still have
+            // content we can pull via `paste_text` (set by the most recent
+            // egui paste event). The OS clipboard API isn't available
+            // synchronously in egui 0.31, so this menu path is best-effort
+            // and silently no-ops when nothing has been pasted yet.
+            let Some(text) = editor.take_paste_text() else {
+                return;
+            };
+            if text.is_empty() {
+                return;
+            }
+            let (s, e) = match editor.selection() {
+                Some(sel) if sel.is_selected() => sel.ordered(),
+                _ => (editor.cursor(), editor.cursor()),
+            };
+            let (nl, nc) = vm.replace_selection_with(s, e, &text);
+            editor.set_selection(None);
+            editor.set_cursor((nl, nc));
+        }
+        EditAction::SelectAll => {
+            let last = vm.len_lines().saturating_sub(1);
+            let last_len = if last < vm.len_lines() {
+                vm.line(last).len()
+            } else {
+                0
+            };
+            editor.set_selection(Some(drz_viewmodel::Selection::new(
+                (0, 0),
+                (last, last_len),
+            )));
+            editor.set_cursor((last, last_len));
+        }
     }
 }
 

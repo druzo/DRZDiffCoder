@@ -985,4 +985,86 @@ $n = null;
             "keyword 'return' not styled"
         );
     }
+
+    #[test]
+    fn r_engine_parses() {
+        let mut eng = HighlightEngine::new(LanguageId::R).unwrap().unwrap();
+        let rope = Rope::from_str("x <- 1\n");
+        eng.parse_full(&rope).unwrap();
+        let _spans = eng.highlight_line(&rope, 0);
+    }
+
+    #[test]
+    fn r_strings_numbers_keywords_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::R).unwrap().unwrap();
+        let src = "# comment\nx <- 42\ns <- \"hello\"\nb <- TRUE\nn <- NULL\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "# comment").contains(&Style::Comment),
+            "r line comment not styled"
+        );
+        assert!(
+            line_styles(1, "42").contains(&Style::Number),
+            "number '42' not styled"
+        );
+        assert!(
+            line_styles(2, "\"hello\"").contains(&Style::StringLit),
+            "r string literal not styled"
+        );
+        assert!(
+            line_styles(3, "TRUE").contains(&Style::Constant),
+            "boolean 'TRUE' not styled as constant"
+        );
+        assert!(
+            line_styles(4, "NULL").contains(&Style::Constant),
+            "literal 'NULL' not styled as constant"
+        );
+    }
+
+    #[test]
+    fn r_functions_and_control_styled() {
+        let mut eng = HighlightEngine::new(LanguageId::R).unwrap().unwrap();
+        let src = "myfunc <- function(x) {\n  if (x > 0) {\n    y <- x * 2\n  }\n}\n";
+        let rope = Rope::from_str(src);
+        eng.parse_full(&rope).unwrap();
+
+        let line_styles = |line_idx: usize, needle: &str| -> Vec<Style> {
+            let line_start = rope.line_to_byte(line_idx);
+            let spans = eng.highlight_line(&rope, line_idx);
+            let Some(local) = src[line_start..].find(needle) else {
+                return Vec::new();
+            };
+            let end = local + needle.len();
+            spans
+                .into_iter()
+                .filter(|s| s.start <= local && s.end >= end)
+                .map(|s| s.style)
+                .collect()
+        };
+
+        assert!(
+            line_styles(0, "function").contains(&Style::Keyword),
+            "keyword 'function' not styled"
+        );
+        assert!(
+            line_styles(1, "if").contains(&Style::Keyword),
+            "keyword 'if' not styled"
+        );
+    }
 }

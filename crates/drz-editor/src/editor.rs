@@ -700,20 +700,21 @@ impl CodeEditor {
     /// Snap-to-word recovers from clicks on whitespace. Extracted as a method
     /// so it can be unit-tested without an `egui::Context`.
     fn apply_double_click(&mut self, line: usize, clicked_col: usize, vm: &EditorViewModel) {
-        let (ls, _le) = vm.line_byte_range(line);
+        // `Selection` coordinates are (line, byte_col-into-line), not
+        // (line, document-byte-offset). `word_range` already returns offsets
+        // within `text_bytes`, so use them directly — do NOT add
+        // `vm.line_byte_range(line).0` (the document start of the line) or
+        // the coords become wrong for any line other than the first. (Caught
+        // by manual smoke on develop: line-N selections rendered empty.)
         let text_bytes = vm.line(line);
         let target_col = snap_to_nearest_word(&text_bytes, clicked_col);
         let (l, r) = word_range(&text_bytes, target_col);
-        let abs_l = ls + l;
-        let abs_r = ls + r;
-        self.cursor = (line, abs_r);
-        self.selection = Some(drz_viewmodel::Selection::new((line, abs_l), (line, abs_r)));
+        self.cursor = (line, r);
+        self.selection = Some(drz_viewmodel::Selection::new((line, l), (line, r)));
         self.drag_anchor = None;
-        // Record the click time so a *third* click within 300 ms on the same
-        // line would have triggered a triple-click. We no longer handle triple-
-        // click via time-based detection (egui tags click 3 as
-        // `triple_clicked`, handled by `apply_triple_click` directly), so
-        // clearing here is sufficient.
+        // Clear (do not record) the double-click timestamp. Triple-click is
+        // now handled directly by `apply_triple_click` on `triple_clicked`
+        // events, so a stale timestamp would be dead weight.
         self.last_double_click = None;
     }
 
@@ -1175,5 +1176,42 @@ mod tests {
         let (s, e) = sel.ordered();
         assert_eq!(s, (0, 4));
         assert_eq!(e, (0, 7));
+    }
+
+    #[test]
+    fn double_click_on_non_first_line_uses_line_relative_cols() {
+        // Regression for the bug found via manual smoke on develop:
+        // `apply_double_click` previously added `vm.line_byte_range(line).0`
+        // (the document-byte start of the line) to `word_range`'s
+        // already-line-relative offsets, producing a Selection with cols
+        // that pointed past the end of the line. The paint pass then
+        // returned `None` and no highlight rendered. This test exercises a
+        // line whose document start byte is non-zero.
+        let mut editor = CodeEditor::new();
+        let vm = make_vm("first line\nsecond line here\nthird\n");
+        // Double-click on 'e' of "second" (col 2 of line 1).
+        editor.apply_double_click(1, 2, &vm);
+        let sel = editor.selection().expect("selection set");
+        let (s, e) = sel.ordered();
+        assert_eq!(
+            (s, e),
+            ((1, 0), (1, 6)),
+            "selection must be line-relative cols, not document-byte offsets"
+        );
+        assert_eq!(editor.cursor(), (1, 6));
+    }
+
+    #[test]
+    fn double_click_word_text_is_extractable_via_vm() {
+        // End-to-end check that `vm.text_in_range` over the selection
+        // produced by `apply_double_click` returns the expected word, not
+        // empty string. (Catches the same Selection-coords bug as the test
+        // above, but at the downstream consumer.)
+        let mut editor = CodeEditor::new();
+        let vm = make_vm("first line\nsecond line here\nthird\n");
+        editor.apply_double_click(1, 2, &vm);
+        let sel = editor.selection().expect("selection set");
+        let (s, e) = sel.ordered();
+        assert_eq!(vm.text_in_range(s, e), "second");
     }
 }

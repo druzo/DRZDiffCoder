@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# scripts/ci/build-linux-native.sh
+# Native Ubuntu build for CI. Produces:
+#   - linux-x86_64: drzdiff binary, .deb, .AppImage, install.sh, SHA256SUMS
+#   - linux-arm64:  drzdiff binary, .deb, install.sh, SHA256SUMS
+set -euo pipefail
+
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+VERSION="${VERSION:?missing VERSION}"
+
+cd "$REPO_ROOT"
+mkdir -p "releases/${VERSION}"
+
+# ---- Rust targets --------------------------------------------------------
+rustup target add x86_64-unknown-linux-gnu
+rustup target add aarch64-unknown-linux-gnu
+
+# ---- Helpers -------------------------------------------------------------
+build_deb() {
+  local stage="$1" target="$2" arch="$3"
+  local pkgroot="$stage/deb-build"
+  rm -rf "$pkgroot"
+  mkdir -p "$pkgroot/DEBIAN" "$pkgroot/usr/bin" \
+           "$pkgroot/usr/share/icons/hicolor/256x256/apps" \
+           "$pkgroot/usr/share/icons/hicolor/128x128/apps" \
+           "$pkgroot/usr/share/icons/hicolor/48x48/apps" \
+           "$pkgroot/usr/share/applications" \
+           "$pkgroot/usr/share/doc/drzdiff"
+
+  install -m755 "$stage/drzdiff" "$pkgroot/usr/bin/drzdiff"
+  cp "$REPO_ROOT/icons/AppIcon.png" "$pkgroot/usr/share/icons/hicolor/256x256/apps/drzdiff.png"
+  cp "$REPO_ROOT/icons/AppIcon.png" "$pkgroot/usr/share/icons/hicolor/128x128/apps/drzdiff.png"
+  cp "$REPO_ROOT/icons/AppIcon.png" "$pkgroot/usr/share/icons/hicolor/48x48/apps/drzdiff.png"
+  cp "$REPO_ROOT/LICENSE" "$pkgroot/usr/share/doc/drzdiff/copyright"
+
+  cat > "$pkgroot/usr/share/applications/drzdiff.desktop" <<EOF
+[Desktop Entry]
+Name=DRZ Diff
+Comment=Source code diff comparer
+Exec=drzdiff %U
+Icon=drzdiff
+Type=Application
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=drzdiff
+MimeType=text/plain;text/x-rust;text/x-python;text/x-c;text/x-c++text/javascript;
+EOF
+
+  cat > "$pkgroot/DEBIAN/control" <<EOF
+Package: drzdiff
+Version: ${VERSION}
+Section: devel
+Priority: optional
+Architecture: ${arch}
+Depends: libgtk-3-0, libxcb-render0, libxcb-shape0, libxcb-xfixes0, libdbus-1-3, libatk1.0-0, libatk-bridge2.0-0, libxkbcommon0, libatspi2.0-0
+Maintainer: DRZ <noreply@drzdiff.local>
+Description: Source code diff/compare tool with tree-sitter highlighting
+ DRZ Diff provides side-by-side source comparison with inline editing,
+ language-aware syntax highlighting, and merge arrows. Built with Rust +
+ egui + tree-sitter.
+EOF
+
+  cat > "$pkgroot/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q /usr/share/icons/hicolor || true
+fi
+exit 0
+EOF
+  chmod 755 "$pkgroot/DEBIAN/postinst"
+
+  fakeroot dpkg-deb --build --root-owner-group "$pkgroot" \
+    "$stage/drzdiff_${VERSION}_${arch}.deb"
+  rm -rf "$pkgroot"
+}
+
+build_appimage() {
+  local stage="$1"
+  local appdir="$stage/AppDir"
+  rm -rf "$appdir"
+  mkdir -p "$appdir/usr/bin" "$appdir/usr/share/icons/hicolor/256x256/apps" \
+           "$appdir/usr/share/applications"
+
+  install -m755 "$stage/drzdiff" "$appdir/usr/bin/drzdiff"
+  cp "$REPO_ROOT/icons/AppIcon.png" "$appdir/usr/share/icons/hicolor/256x256/apps/drzdiff.png"
+
+  cat > "$appdir/drzdiff.desktop" <<EOF
+[Desktop Entry]
+Name=DRZ Diff
+Comment=Source code diff comparer
+Exec=drzdiff %U
+Icon=drzdiff
+Type=Application
+Terminal=false
+Categories=Development;Utility;
+EOF
+  cp "$appdir/drzdiff.desktop" "$appdir/usr/share/applications/drzdiff.desktop"
+
+  cat > "$appdir/AppRun" <<'EOF'
+#!/bin/sh
+exec "$(dirname "$0")/usr/bin/drzdiff" "$@"
+EOF
+  chmod +x "$appdir/AppRun"
+
+  cp "$REPO_ROOT/icons/AppIcon.png" "$appdir/drzdiff.png"
+  cp "$REPO_ROOT/icons/AppIcon.png" "$appdir/.DirIcon" 2>/dev/null || true
+
+  local appimagetool="$HOME/.local/bin/appimagetool"
+  if [ ! -x "$appimagetool" ]; then
+    mkdir -p "$HOME/.local/bin"
+    curl -fL -o "$appimagetool" \
+      "https://github.com/AppImage/AppImageKit/releases/download/13/obsolete-appimagetool-x86_64.AppImage"
+    chmod +x "$appimagetool"
+  fi
+
+  ARCH=x86_64 "$appimagetool" "$appdir" \
+    "$stage/drzdiff-${VERSION}-x86_64.AppImage" 2>&1 | tail -5
+  rm -rf "$appdir"
+}
+
+build_target() {
+  local target="$1" folder="$2" deb_arch="$3" with_appimage="$4"
+  echo "[linux] building $target -> $folder"
+
+  case "$target" in
+    x86_64-unknown-linux-gnu)
+      export CC_x86_64_unknown_linux_gnu=cc
+      export CXX_x86_64_unknown_linux_gnu=c++
+      ;;
+    aarch64-unknown-linux-gnu)
+      export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+      export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
+      ;;
+  esac
+
+  cargo build --release --target "$target" -p drz-app --locked
+  local bin="target/${target}/release/drzdiff"
+  [ -f "$bin" ] || { echo "missing $bin" >&2; exit 1; }
+
+  case "$target" in
+    x86_64-unknown-linux-gnu) strip "$bin" ;;
+    aarch64-unknown-linux-gnu) aarch64-linux-gnu-strip "$bin" ;;
+  esac
+
+  local stage="${REPO_ROOT}/releases/${VERSION}/${folder}"
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  cp "$bin" "$stage/drzdiff"
+  chmod +x "$stage/drzdiff"
+
+  build_deb "$stage" "$target" "$deb_arch"
+  [ "$with_appimage" = "yes" ] && build_appimage "$stage"
+
+  cat > "$stage/install.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+ARCH=$(uname -m)
+
+case "$ARCH" in
+  x86_64|amd64) DEB=$(ls drzdiff_*_amd64.deb 2>/dev/null | head -1);;
+  aarch64|arm64) DEB=$(ls drzdiff_*_arm64.deb 2>/dev/null | head -1);;
+  *) echo "unknown arch $ARCH" >&2; exit 1 ;;
+esac
+
+if [ -n "$DEB" ] && [ -f "$DEB" ]; then
+  echo "Installing $DEB via dpkg ..."
+  sudo dpkg -i "$DEB"
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get install -f -y || true
+  fi
+  echo "Done. Run: drzdiff"
+elif [ -f "drzdiff-"*.AppImage ]; then
+  APPIMAGE=$(ls drzdiff-*.AppImage 2>/dev/null | head -1)
+  chmod +x "$APPIMAGE"
+  echo "Run: ./$APPIMAGE"
+else
+  echo "Install manually: sudo cp $(pwd)/drzdiff /usr/local/bin/"
+fi
+SH
+  chmod +x "$stage/install.sh"
+
+  cd "$stage"
+  sha256sum * > SHA256SUMS
+  ls -la
+  echo "[linux] $folder done"
+}
+
+build_target x86_64-unknown-linux-gnu linux-x86_64 amd64 yes
+build_target aarch64-unknown-linux-gnu linux-arm64 arm64 no
+
+echo "[linux] all done"

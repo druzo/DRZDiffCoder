@@ -12,16 +12,20 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
-    name: Build cross-platform artifacts
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      value: ${{ steps.resolve.outputs.value }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Resolve version
-        id: version
+        id: resolve
         run: |
           if [ -n "${{ inputs.version }}" ]; then
             echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
@@ -29,34 +33,241 @@ jobs:
             TAG="${GITHUB_REF_NAME#v}"
             echo "value=$TAG" >> "$GITHUB_OUTPUT"
           fi
-          echo "VERSION=${{ steps.version.outputs.value }}" >> "$GITHUB_ENV"
 
-      - name: Install prereqs
-        run: sudo ./scripts/release/install-prereqs.sh
+      - name: Verify Cargo.toml version
+        run: |
+          CARGO_VER="$(grep '^version' crates/drz-app/Cargo.toml | head -1 | cut -d'"' -f2)"
+          if [ "$CARGO_VER" != "${{ steps.resolve.outputs.value }}" ]; then
+            echo "ERROR: crates/drz-app/Cargo.toml version ($CARGO_VER) does not match release (${{ steps.resolve.outputs.value }})" >&2
+            exit 1
+          fi
 
-      - name: Cache cargo target
-        uses: Swatinem/rust-cache@v2
+  build-linux:
+    name: Linux (x86_64 + arm64)
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ./crates/drz-app -> target
 
-      - name: Run release pipeline
-        run: ./scripts/release.sh
+      - name: Install native build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu dpkg-dev fakeroot \
+            libfuse2t64 file
+
+      - name: Build Linux artifacts
+        run: ./scripts/ci/build-linux-native.sh
         env:
-          VERSION: ${{ steps.version.outputs.value }}
+          VERSION: ${{ needs.version.outputs.value }}
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: drzdiff-${{ steps.version.outputs.value }}
-          path: releases/${{ steps.version.outputs.value }}/**/*
-          if-no-files-found: warn
+          name: drzdiff-linux-x86_64
+          path: releases/${{ needs.version.outputs.value }}/linux-x86_64/*
+          if-no-files-found: error
 
-      - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drzdiff-linux-arm64
+          path: releases/${{ needs.version.outputs.value }}/linux-arm64/*
+          if-no-files-found: error
+
+  build-windows:
+    name: Windows (x86_64)
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./crates/drz-app -> target
+
+      - name: Build Windows artifacts
+        shell: pwsh
+        run: ./scripts/ci/build-windows-native.ps1 -Version ${{ needs.version.outputs.value }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drzdiff-windows-x86_64
+          path: releases/${{ needs.version.outputs.value }}/windows-x86_64/*
+          if-no-files-found: error
+
+  build-macos-x86_64:
+    name: macOS (Intel)
+    needs: version
+    runs-on: macos-13
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./crates/drz-app -> target
+
+      - name: Install ImageMagick
+        run: brew install imagemagick || true
+
+      - name: Build macOS x86_64 artifacts
+        run: ./scripts/ci/build-macos-native.sh x86_64
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drzdiff-darwin-x86_64
+          path: releases/${{ needs.version.outputs.value }}/darwin-x86_64/*
+          if-no-files-found: error
+
+  build-macos-arm64:
+    name: macOS (Apple Silicon)
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./crates/drz-app -> target
+
+      - name: Install ImageMagick
+        run: brew install imagemagick || true
+
+      - name: Build macOS arm64 artifacts
+        run: ./scripts/ci/build-macos-native.sh arm64
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drzdiff-darwin-arm64
+          path: releases/${{ needs.version.outputs.value }}/darwin-arm64/*
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: [version, build-linux, build-windows, build-macos-x86_64, build-macos-arm64]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: releases/${{ needs.version.outputs.value }}
+          pattern: drzdiff-*
+
+      - name: Normalize artifact layout
+        run: |
+          cd "releases/${{ needs.version.outputs.value }}"
+          for d in drzdiff-*; do
+            [ -d "$d" ] || continue
+            mv "$d"/* "$(echo "$d" | sed 's/^drzdiff-//')"/
+            rmdir "$d"
+          done
+
+      - name: Compute combined SHA256SUMS
+        run: |
+          cd "releases/${{ needs.version.outputs.value }}"
+          find . -type f ! -name 'SHA256SUMS' -exec sha256sum {} + | sort > SHA256SUMS
+
+      - name: Generate release body
+        id: body
+        run: |
+          VERSION="${{ needs.version.outputs.value }}"
+          cat > /tmp/release-body.md <<EOF
+          ## Installation guide
+
+          Choose your platform below. Every artifact is SHA-256 verified; run \`sha256sum -c SHA256SUMS\` after downloading.
+
+          ### Windows (x86_64)
+
+          1. Download \`drzdiff_${VERSION}_x64.msi\` from the \`windows-x86_64\` assets below.
+          2. Double-click the \`.msi\` and follow the installer. Windows SmartScreen may warn because the binary is unsigned — click **More info → Run anyway**.
+          3. Find **DRZ Diff** in the Start Menu.
+
+          Fallback (no \`.msi\`): download \`drzdiff.exe\` and run \`install.bat\`.
+
+          ### Linux
+
+          #### Debian / Ubuntu / derivatives (x86_64)
+
+          \`\`\`bash
+          cd linux-x86_64
+          sudo dpkg -i drzdiff_${VERSION}_amd64.deb
+          sudo apt-get install -f -y
+          drzdiff
+          \`\`\`
+
+          #### Universal x86_64 AppImage
+
+          \`\`\`bash
+          cd linux-x86_64
+          chmod +x drzdiff-${VERSION}-x86_64.AppImage
+          ./drzdiff-${VERSION}-x86_64.AppImage
+          \`\`\`
+
+          #### ARM64 (Asahi, Pi 5, Graviton, …)
+
+          \`\`\`bash
+          cd linux-arm64
+          sudo dpkg -i drzdiff_${VERSION}_arm64.deb
+          sudo apt-get install -f -y
+          drzdiff
+          \`\`\`
+
+          ### macOS
+
+          #### Intel (x86_64)
+
+          \`\`\`bash
+          cd darwin-x86_64
+          bash install.sh
+          \`\`\`
+
+          Or drag \`DRZDiff.app\` from the mounted \`.dmg\` to \`/Applications\`.
+
+          #### Apple Silicon (arm64)
+
+          \`\`\`bash
+          cd darwin-arm64
+          bash install.sh
+          \`\`\`
+
+          Because the bundle is ad-hoc signed, macOS Gatekeeper will warn on first launch. Either right-click → **Open**, or run:
+
+          \`\`\`bash
+          xattr -dr com.apple.quarantine /Applications/DRZDiff.app
+          \`\`\`
+
+          ## Verify checksums
+
+          \`\`\`bash
+          sha256sum -c SHA256SUMS
+          \`\`\`
+
+          ## Notes
+
+          - Windows binaries are unsigned for v${VERSION}; SmartScreen may show a warning.
+          - macOS bundles are ad-hoc signed only; no Apple Developer ID notarization is performed for this release.
+          EOF
+          echo "path=/tmp/release-body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: "DRZ Diff ${{ steps.version.outputs.value }}"
-          generate_release_notes: true
+          name: "DRZ Diff ${{ needs.version.outputs.value }}"
+          body_path: ${{ steps.body.outputs.path }}
           files: |
-            releases/${{ steps.version.outputs.value }}/**/*
+            releases/${{ needs.version.outputs.value }}/**/*

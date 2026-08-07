@@ -54,6 +54,7 @@ export HOME="${HOME:-/root}"
 
 cd "$REPO_ROOT"
 fakeroot rpmbuild -bb $RPM_FORCE \
+  --target "$RPM_ARCH" \
   --define "_topdir $RPM_TOP" \
   --define "_rpmdir $STAGE" \
   --define "_rpmfilename drzdiff-${VERSION}-1.${RPM_ARCH}.rpm" \

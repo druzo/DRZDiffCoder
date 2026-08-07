@@ -190,7 +190,76 @@ jobs:
           rm -rf "$WXS_DIR"
 
           cp "$EXE" "releases/${VERSION}/windows-x86_64/"
-          cp scripts/release/*.bat "releases/${VERSION}/windows-x86_64/" 2>/dev/null || true
+
+          # install/uninstall helpers (replaces build-windows.sh's logic)
+          STAGE="releases/${VERSION}/windows-x86_64"
+          cat > "$STAGE/install.bat" <<'BAT'
+          @echo off
+          REM install.bat - DRZ Diff
+          setlocal
+          pushd "%~dp0"
+
+          if exist "drzdiff_*_x64.msi" goto :msi_install
+
+          echo --- .msi not found, installing via direct copy ---
+          set "INSTALLDIR=%LOCALAPPDATA%\Programs\DRZ Diff"
+          if not exist "%INSTALLDIR%" mkdir "%INSTALLDIR%"
+          copy /Y "drzdiff.exe" "%INSTALLDIR%\drzdiff.exe" >NUL
+          echo Installed to %INSTALLDIR%.
+          popd
+          endlocal
+          exit /b 0
+
+          :msi_install
+          for %%M in (drzdiff_*_x64.msi) do (
+            echo Installing %%M ...
+            msiexec /i "%%M" /qb! ADDLOCAL=ALL
+            if errorlevel 1 ( echo Install failed.& popd & exit /b 1 )
+          )
+          echo Done. Find "DRZ Diff" in Start Menu.
+          popd
+          endlocal
+          exit /b 0
+          BAT
+
+          cat > "$STAGE/install_shortcut.ps1" <<'PS1'
+          $ErrorActionPreference = 'Stop'
+          $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\DRZ Diff'
+          $Exe = Join-Path $InstallDir 'drzdiff.exe'
+          if (-not (Test-Path $Exe)) { Write-Error "drzdiff.exe not found at $Exe"; exit 1 }
+          $ShortcutDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+          if (-not (Test-Path $ShortcutDir)) { New-Item -ItemType Directory -Path $ShortcutDir | Out-Null }
+          $ShortcutPath = Join-Path $ShortcutDir 'DRZ Diff.lnk'
+          $Shell = New-Object -ComObject WScript.Shell
+          $Shortcut = $Shell.CreateShortcut($ShortcutPath)
+          $Shortcut.TargetPath = $Exe
+          $Shortcut.WorkingDirectory = $InstallDir
+          $Shortcut.IconLocation = "$($Exe),0"
+          $Shortcut.Save()
+          Write-Host "Created Start Menu shortcut: $ShortcutPath"
+          PS1
+
+          cat > "$STAGE/uninstall.bat" <<'BAT'
+          @echo off
+          REM uninstall.bat - DRZ Diff
+          setlocal
+          pushd "%~dp0"
+          if exist "drzdiff_*_x64.msi" (
+            for %%M in (drzdiff_*_x64.msi) do (
+              echo Uninstalling via .msi: %%M
+              msiexec /x "%%M" /qb!
+            )
+          ) else (
+            set "INSTALLDIR=%LOCALAPPDATA%\Programs\DRZ Diff"
+            if exist "%INSTALLDIR%\drzdiff.exe" del "%INSTALLDIR%\drzdiff.exe"
+            if exist "%INSTALLDIR%" rmdir "%INSTALLDIR%" 2>NUL
+            if exist "%APPDATA%\Microsoft\Windows\Start Menu\Programs\DRZ Diff.lnk" del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\DRZ Diff.lnk"
+            echo Removed DRZ Diff from %INSTALLDIR%.
+          )
+          popd
+          endlocal
+          exit /b 0
+          BAT
 
           ls -la "releases/${VERSION}/windows-x86_64/"
 
@@ -414,12 +483,13 @@ jobs:
       - name: Find notes file
         id: notes
         run: |
+          V="${{ steps.ver.outputs.VERSION }}"
+          # Prefer exact match by date + version; fall back to any *-notes.md
           NOTES="$(find docs/superpowers/specs -maxdepth 2 -type f \
-                     \( -name "${{ steps.ver.outputs.VERSION }}-notes.md" \
-                        -o -name "${{ steps.ver.outputs.VERSION }}-release-notes.md" \) \
-                     | head -1)"
+                     \( -name "*-${V}-notes.md" -o -name "*-${V}-release-notes.md" \) \
+                     | sort | tail -1)"
           if [ -z "$NOTES" ] || [ ! -f "$NOTES" ]; then
-            NOTES="RELEASE-NOTES.md"
+            NOTES=""
           fi
           echo "notes_path=${NOTES}" >> "$GITHUB_OUTPUT"
 
@@ -431,6 +501,29 @@ jobs:
           generate_release_notes: false
           body_path: ${{ steps.notes.outputs.notes_path }}
           fail_on_unmatched_files: false
+          draft: true
           files: |
-            dist/**/*
-            !dist/**/*.deb-build/**
+            dist/linux-x86_64/drzdiff
+            dist/linux-x86_64/drzdiff_*.deb
+            dist/linux-x86_64/drzdiff-*.rpm
+            dist/linux-x86_64/drzdiff-*.AppImage
+            dist/linux-x86_64/install.sh
+            dist/linux-arm64/drzdiff
+            dist/linux-arm64/drzdiff_*.deb
+            dist/linux-arm64/drzdiff-*.rpm
+            dist/linux-arm64/install.sh
+            dist/windows-x86_64/drzdiff.exe
+            dist/windows-x86_64/*.msi
+            dist/windows-x86_64/*.bat
+            dist/windows-x86_64/*.ps1
+            dist/darwin-x86_64/DRZDiff_*.dmg
+            dist/darwin-x86_64/DRZDiff_*.zip
+            dist/darwin-arm64/DRZDiff_*.dmg
+            dist/darwin-arm64/DRZDiff_*.zip
+            dist/SHA256SUMS.txt
+
+      - name: Publish release
+        run: |
+          gh release edit "${{ steps.ver.outputs.TAG }}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

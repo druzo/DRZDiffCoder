@@ -194,7 +194,9 @@ jobs:
           cd "releases/${{ needs.version.outputs.value }}"
           for d in drzdiff-*; do
             [ -d "$d" ] || continue
-            mv "$d"/* "$(echo "$d" | sed 's/^drzdiff-//')"/
+            target="$(echo "$d" | sed 's/^drzdiff-//')"
+            mkdir -p "$target"
+            mv "$d"/* "$target"/
             rmdir "$d"
           done
 

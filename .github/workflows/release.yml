@@ -126,7 +126,7 @@ jobs:
   build-macos-x86_64:
     name: macOS (Intel)
     needs: version
-    runs-on: macos-13
+    runs-on: macos-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -135,8 +135,11 @@ jobs:
         with:
           shared-key: darwin-x86_64
 
+      - name: Install Rosetta 2
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
       - name: Build macOS x86_64 artifacts
-        run: ./scripts/ci/build-macos-native.sh x86_64
+        run: arch -x86_64 ./scripts/ci/build-macos-native.sh x86_64
         env:
           VERSION: ${{ needs.version.outputs.value }}
 

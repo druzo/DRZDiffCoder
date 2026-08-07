@@ -22,6 +22,7 @@ try {
 
     # Build release binary
     cargo build --release --target x86_64-pc-windows-msvc -p drz-app --locked
+    if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
     $Exe = "$RepoRoot/target/x86_64-pc-windows-msvc/release/drzdiff.exe"
     if (-not (Test-Path $Exe)) { throw "missing $Exe" }
@@ -29,6 +30,7 @@ try {
 
     # Install cargo-wix and build MSI
     cargo install cargo-wix --locked
+    if ($LASTEXITCODE -ne 0) { throw "cargo install cargo-wix failed" }
 
     $CrateDir = "$RepoRoot/crates/drz-app"
     $WixDir = "$CrateDir/wix"
@@ -40,8 +42,11 @@ try {
         --product-name "DRZ Diff" `
         --product-version $Version `
         --manufacturer "DRZ" `
-        --license "$RepoRoot/LICENSE" `
-        --no-build 2>&1 | Select-Object -Last 5
+        --product-icon "$RepoRoot/icons/AppIcon.ico" `
+        --no-build
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "cargo wix init failed; continuing with .exe-only artifacts"
+    }
 
     if (Test-Path "$WixDir/main.wxs") {
         @"
@@ -77,8 +82,11 @@ try {
 </Wix>
 "@ | Set-Content "$WixDir/main.wxs" -Encoding UTF8
 
-        cargo wix --no-build 2>&1 | Select-Object -Last 5
-        $Msi = Get-ChildItem "$CrateDir/target/wix" -Filter '*.msi' -File | Select-Object -First 1
+        cargo wix --no-build
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "cargo wix build failed; continuing with .exe-only artifacts"
+        }
+        $Msi = Get-ChildItem "$CrateDir/target/wix" -Filter '*.msi' -File -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($Msi) {
             Copy-Item $Msi.FullName "$Stage/drzdiff_${Version}_x64.msi" -Force
         }
@@ -162,6 +170,11 @@ exit /b 0
     Pop-Location
 
     Get-ChildItem $Stage
+    if (-not (Test-Path "$Stage/drzdiff.exe")) {
+        throw "No drzdiff.exe was produced"
+    }
+    # Reset native exit code so a previous non-fatal warning doesn't fail the step.
+    $global:LASTEXITCODE = 0
     Write-Host "[windows] done"
 }
 finally {

@@ -138,6 +138,8 @@ build_target() {
   esac
 
   cargo build --release --target "$target" -p drz-app --locked
+  echo "[linux] target dir contents for $target:"
+  ls -la "target/${target}/release/" | head -20
   local bin="target/${target}/release/drzdiff"
   [ -f "$bin" ] || { echo "missing $bin" >&2; exit 1; }
 

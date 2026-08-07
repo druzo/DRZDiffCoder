@@ -1,7 +1,7 @@
 # crates/drz-core/Cargo.toml
 [package]
 name = "drz-core"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 
 [dependencies]

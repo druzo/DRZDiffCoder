@@ -1,8 +1,12 @@
 # crates/drz-app/Cargo.toml
 [package]
 name = "drz-app"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
+authors = ["Antônio Druzo <druzo@drzsoft.com.br>"]
+description = "Source-code diff/compare tool with tree-sitter highlighting"
+license = "MIT"
+repository = "https://github.com/druzo/DRZDiffCoder"
 
 [[bin]]
 name = "drzdiff"

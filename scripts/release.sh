@@ -51,10 +51,18 @@ for p in $PLATFORMS; do
     linux|linux-x86_64)
       echo "[release] === LINUX x86_64 ==="
       LINUX_ONLY="x86_64" "$(dirname "$0")/release/build-linux.sh"
+      if command -v rpmbuild >/dev/null 2>&1; then
+        "$(dirname "$0")/release/build-rpm.sh" x86_64 || \
+          echo "[release] rpm x86_64 skipped"
+      fi
       ;;
     linux-arm64)
       echo "[release] === LINUX arm64 ==="
       LINUX_ONLY="arm64" "$(dirname "$0")/release/build-linux.sh"
+      if command -v rpmbuild >/dev/null 2>&1; then
+        "$(dirname "$0")/release/build-rpm.sh" arm64 || \
+          echo "[release] rpm arm64 skipped"
+      fi
       ;;
     darwin-x86_64)
       echo "[release] === MACOS x86_64 ==="

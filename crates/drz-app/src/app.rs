@@ -486,7 +486,7 @@ fn paint_brand_bar(
                 );
                 ui.add_space(6.0);
                 ui.label(
-                    egui::RichText::new("v0.1.0")
+                    egui::RichText::new("v0.1.2")
                         .font(egui::FontId::proportional(11.0))
                         .color(egui::Color32::from_rgb(148, 156, 178)),
                 );

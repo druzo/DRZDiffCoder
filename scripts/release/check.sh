@@ -75,8 +75,12 @@ for plat in $REQUESTED; do
             "x86_64-unknown-linux-gnu" "x86_64-unknown-linux-gnu"
           MISSING+=("target:x86_64-unknown-linux-gnu")
         fi
-        # AppImage only needed for amd64
-        need appimagetool "run install-prereqs.sh (downloads to ~/.local/bin)"
+        # AppImage only needed for amd64 (advisory — build-linux.sh skips with a WARN)
+        if command -v appimagetool >/dev/null 2>&1; then
+          printf '  \033[1;32m✓\033[0m %s\n' "appimagetool"
+        else
+          printf '  \033[1;33m-\033[0m %s missing — AppImage build will be skipped\n' "appimagetool"
+        fi
       fi
       ;;
     darwin-x86_64|darwin-arm64|darwin)

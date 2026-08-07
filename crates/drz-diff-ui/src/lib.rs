@@ -1,3 +1,3 @@
 mod diff_view;
 
-pub use diff_view::DiffView;
+pub use diff_view::{DiffView, EditAction, Side};

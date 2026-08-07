@@ -1,0 +1,56 @@
+# .github/workflows/docker.yml
+# Builds and pushes the reproducible Linux build image to ghcr.io.
+# Tag = the release version (e.g. 0.1.2). Also tagged "latest" on main pushes.
+name: docker
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  linux-builder:
+    name: Build linux-builder image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            T="${GITHUB_REF_NAME#v}"
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            T="latest"
+          else
+            T="dev-${GITHUB_SHA::7}"
+          fi
+          echo "tag=${T}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push linux-builder
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/linux-builder.Dockerfile
+          push: true
+          tags: |
+            ghcr.io/druzo/drzdiff-linux-builder:${{ steps.tag.outputs.tag }}
+            ghcr.io/druzo/drzdiff-linux-builder:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

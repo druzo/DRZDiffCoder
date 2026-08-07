@@ -36,9 +36,25 @@ echo "[icons] $ICNS"
 if command -v iconutil >/dev/null 2>&1; then
   rm -rf "$ICONSET"
   mkdir -p "$ICONSET"
+  # Prefer ImageMagick for resize; fall back to PIL if neither magick nor
+  # convert is on PATH.
   for sz in 16 32 64 128 256 512; do
-    magick "$SRC" -resize "${sz}x${sz}" "$ICONSET/icon_${sz}x${sz}.png"
-    magick "$SRC" -resize "$((sz * 2))x$((sz * 2))" "$ICONSET/icon_${sz}x${sz}@2x.png"
+    if command -v magick >/dev/null 2>&1; then
+      magick "$SRC" -resize "${sz}x${sz}" "$ICONSET/icon_${sz}x${sz}.png"
+      magick "$SRC" -resize "$((sz * 2))x$((sz * 2))" "$ICONSET/icon_${sz}x${sz}@2x.png"
+    elif command -v convert >/dev/null 2>&1; then
+      convert "$SRC" -resize "${sz}x${sz}" "$ICONSET/icon_${sz}x${sz}.png"
+      convert "$SRC" -resize "$((sz * 2))x$((sz * 2))" "$ICONSET/icon_${sz}x${sz}@2x.png"
+    else
+      python3 - "$SRC" "$ICONSET" "$sz" <<'PY'
+import sys
+from PIL import Image
+src, ic, sz = sys.argv[1], sys.argv[2], int(sys.argv[3])
+img = Image.open(src).convert("RGBA")
+img.resize((sz, sz), Image.LANCZOS).save(f"{ic}/icon_{sz}x{sz}.png", optimize=True)
+img.resize((sz*2, sz*2), Image.LANCZOS).save(f"{ic}/icon_{sz}x{sz}@2x.png", optimize=True)
+PY
+    fi
   done
   iconutil -c icns "$ICONSET" -o "$ICNS"
   rm -rf "$ICONSET"

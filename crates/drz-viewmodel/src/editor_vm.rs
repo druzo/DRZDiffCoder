@@ -3,6 +3,19 @@ use drz_core::{CoreError, Document, NewlinePolicy, TextEdit};
 use drz_highlight::{HighlightEdit, HighlightEngine, LanguageId};
 use std::path::Path;
 
+/// One unit of undo/redo history: the document text BEFORE an edit was
+/// applied, plus the caret position that should be restored when this entry
+/// is undone. The editor (View) supplies the caret, since caret lives there;
+/// the VM only owns the document state. Stored as a full string snapshot
+/// (not a diff) so undo/redo are O(1) per step at the cost of memory.
+/// MVP granularity: each `edit()` call is one undo step (no typing-burst
+/// coalescing).
+#[derive(Debug, Clone)]
+struct UndoEntry {
+    text: String,
+    caret: Option<(usize, usize)>,
+}
+
 /// Half-open text selection in `(line, byte_col)` coordinates.
 /// `anchor` is fixed (click position); `cursor` follows pointer / arrow keys.
 /// Byte-col, not char-col, to match the rest of the editor's coordinate system.
@@ -51,6 +64,11 @@ pub struct EditorViewModel {
     /// Mutation counter: bumped by `edit()` only, so readers (e.g. the diff
     /// view) can tell real edits apart from render-path access.
     edit_seq: u64,
+    undo_stack: Vec<UndoEntry>,
+    redo_stack: Vec<UndoEntry>,
+    /// Set while an undo or redo playback is in progress so the synthetic
+    /// internal edits don't push onto their own stacks.
+    in_history_playback: bool,
 }
 
 impl EditorViewModel {
@@ -63,6 +81,9 @@ impl EditorViewModel {
             engine,
             lang,
             edit_seq: 0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            in_history_playback: false,
         };
         vm.reparse_full();
         Ok(vm)
@@ -75,6 +96,9 @@ impl EditorViewModel {
             engine,
             lang,
             edit_seq: 0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            in_history_playback: false,
         };
         vm.reparse_full();
         vm
@@ -87,6 +111,33 @@ impl EditorViewModel {
     }
 
     pub fn edit(&mut self, start_byte: usize, old_end_byte: usize, text: &str) {
+        self.edit_with_caret(start_byte, old_end_byte, text, None);
+    }
+
+    /// Variant of [`edit`] that records `caret` for undo restoration. The
+    /// caret should be the position the editor held BEFORE the edit (the
+    /// position the user will return to on undo). `caret` may be `None` when
+    /// the caller doesn't have a caret (merge chunks, replace_lines), in
+    /// which case undo restores to the byte after the replaced range.
+    pub fn edit_with_caret(
+        &mut self,
+        start_byte: usize,
+        old_end_byte: usize,
+        text: &str,
+        caret: Option<(usize, usize)>,
+    ) {
+        // Snapshot the pre-edit rope + caret so undo can restore this state.
+        // History playback (undo/redo) calls edit_with_caret with
+        // in_history_playback=true so we don't push the synthetic edit onto
+        // its own stack.
+        if !self.in_history_playback {
+            self.undo_stack.push(UndoEntry {
+                text: self.doc.to_string(),
+                caret,
+            });
+            // Any new user edit invalidates the redo stack.
+            self.redo_stack.clear();
+        }
         self.edit_seq += 1;
         let hl_edit =
             HighlightEdit::from_rope_edit(self.doc.rope(), start_byte, old_end_byte, text);
@@ -98,6 +149,71 @@ impl EditorViewModel {
         if let Some(engine) = &mut self.engine {
             let _ = engine.apply_edit(&hl_edit, self.doc.rope());
         }
+    }
+
+    /// Restore the most recent edit, if any. Returns the caret position the
+    /// editor should re-display, or `None` if the undo stack was empty.
+    /// `current_caret` is the caret the editor currently shows — it gets
+    /// pushed onto the redo stack so a subsequent redo can restore the
+    /// post-undo caret. Pass `None` if the editor has no caret.
+    /// Pushes the current state onto the redo stack.
+    pub fn undo(&mut self, current_caret: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        let entry = self.undo_stack.pop()?;
+        let current_text = self.doc.to_string();
+        // The redo entry stores the state BEFORE the undo (i.e. the state
+        // we're restoring back to). We attach the editor's current caret
+        // so a subsequent redo can place the caret at the post-edit
+        // position the user last saw.
+        self.redo_stack.push(UndoEntry {
+            text: current_text,
+            caret: current_caret,
+        });
+        self.replace_document_text(&entry.text);
+        entry.caret
+    }
+
+    /// Replay the most recently undone edit, if any. Returns the caret
+    /// position the editor should re-display, or `None` if the redo stack
+    /// was empty. `current_caret` is the caret the editor currently shows
+    /// (post-undo); it gets pushed onto the undo stack so a subsequent
+    /// undo restores the caret to where the user was before the redo.
+    pub fn redo(&mut self, current_caret: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        let entry = self.redo_stack.pop()?;
+        let current_text = self.doc.to_string();
+        self.undo_stack.push(UndoEntry {
+            text: current_text,
+            caret: current_caret,
+        });
+        self.replace_document_text(&entry.text);
+        entry.caret
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    /// Drop both stacks. Call after `Document::open` or other operations
+    /// that semantically replace the document (e.g. swap_sides). Undo/redo
+    /// across a swap would otherwise restore stale rope content.
+    pub fn clear_history(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
+    /// Replace the entire document text in one shot. Used by undo/redo to
+    /// restore a snapshot. Goes through `edit_with_caret` with the playback
+    /// flag so the synthetic edit doesn't push onto its own stack, and so
+    /// the highlight engine receives exactly one InputEdit per undo/redo
+    /// step (preserving the AGENTS.md invariant).
+    fn replace_document_text(&mut self, new_text: &str) {
+        let old_len = self.doc.rope().len_bytes();
+        self.in_history_playback = true;
+        self.edit_with_caret(0, old_len, new_text, None);
+        self.in_history_playback = false;
     }
 
     pub fn insert_at_line_col(&mut self, line: usize, col_byte: usize, text: &str) {
@@ -517,5 +633,161 @@ mod tests {
         let (nl, nc) = vm.replace_selection_with((last, 0), (last, content_len), "");
         assert_eq!(vm.document_text(), "alpha\n");
         assert_eq!((nl, nc), (last, 0));
+    }
+
+    // -------------------------------------------------------------------
+    // Undo / redo
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn undo_on_empty_stack_is_noop() {
+        let mut vm = EditorViewModel::from_text("hello\n", LanguageId::PlainText);
+        assert!(!vm.can_undo());
+        assert!(vm.undo(None).is_none());
+        assert_eq!(vm.document_text(), "hello\n");
+        assert_eq!(vm.edit_seq(), 0);
+    }
+
+    #[test]
+    fn undo_restores_previous_text() {
+        let mut vm = EditorViewModel::from_text("hello\n", LanguageId::PlainText);
+        vm.edit_with_caret(5, 5, " world", Some((0, 5)));
+        assert_eq!(vm.document_text(), "hello world\n");
+        assert!(vm.can_undo());
+        let caret = vm.undo(None);
+        assert_eq!(caret, Some((0, 5)));
+        assert_eq!(vm.document_text(), "hello\n");
+        assert!(!vm.can_undo());
+    }
+
+    #[test]
+    fn redo_replays_undone_edit() {
+        let mut vm = EditorViewModel::from_text("hello\n", LanguageId::PlainText);
+        vm.edit_with_caret(5, 5, " world", Some((0, 5)));
+        // post-edit caret lives at the end of the inserted text. The editor
+        // passes this into undo so redo can restore it.
+        let _ = vm.undo(Some((0, 11)));
+        assert!(vm.can_redo());
+        let caret = vm.redo(None);
+        assert_eq!(vm.document_text(), "hello world\n");
+        // Redo returns the pre-redo caret that the editor passed to undo.
+        assert_eq!(caret, Some((0, 11)));
+        assert!(!vm.can_redo());
+    }
+
+    #[test]
+    fn redo_restores_post_edit_caret() {
+        // Type 'x' at col 5 of "hello\n" → doc becomes "hellox\n", caret
+        // moves to col 6. Undo restores caret to (0,5). Redo must put caret
+        // back at (0,6) (the post-edit position the user saw).
+        let mut vm = EditorViewModel::from_text("hello\n", LanguageId::PlainText);
+        vm.edit_with_caret(5, 5, "x", Some((0, 5)));
+        // After edit, editor cursor is at (0, 6).
+        let caret_after_undo = vm.undo(Some((0, 6)));
+        assert_eq!(caret_after_undo, Some((0, 5)));
+        let caret_after_redo = vm.redo(Some((0, 5)));
+        assert_eq!(caret_after_redo, Some((0, 6)));
+    }
+
+    #[test]
+    fn new_edit_clears_redo_stack() {
+        let mut vm = EditorViewModel::from_text("hello\n", LanguageId::PlainText);
+        vm.edit(5, 5, " world");
+        let _ = vm.undo(None);
+        assert!(vm.can_redo());
+        // A fresh user edit must invalidate redo history.
+        vm.edit(0, 0, ">> ");
+        assert!(!vm.can_redo());
+    }
+
+    #[test]
+    fn undo_redo_undo_round_trip() {
+        let mut vm = EditorViewModel::from_text("hello\n", LanguageId::PlainText);
+        // After open, doc is "hello\n" (6 bytes). Insert "world\n" at byte 6
+        // → "hello\nworld\n" (12 bytes). Then insert "!" at byte 11 (between
+        // 'd' and the trailing \n) → "hello\nworld!\n" (13 bytes).
+        vm.edit_with_caret(6, 6, "world\n", Some((1, 5)));
+        assert_eq!(vm.document_text(), "hello\nworld\n");
+        vm.edit_with_caret(11, 11, "!", Some((1, 6)));
+        assert_eq!(vm.document_text(), "hello\nworld!\n");
+        let _ = vm.undo(None);
+        assert_eq!(vm.document_text(), "hello\nworld\n");
+        let _ = vm.undo(None);
+        assert_eq!(vm.document_text(), "hello\n");
+        let _ = vm.redo(None);
+        assert_eq!(vm.document_text(), "hello\nworld\n");
+        let _ = vm.redo(None);
+        assert_eq!(vm.document_text(), "hello\nworld!\n");
+    }
+
+    #[test]
+    fn undo_restores_caret_to_pre_edit_position() {
+        // Verifies caret round-trip: the caret passed to edit_with_caret is
+        // what undo() returns, so the View layer can restore cursor display.
+        let mut vm = EditorViewModel::from_text("hello\n", LanguageId::PlainText);
+        vm.edit_with_caret(5, 5, " world", Some((0, 11)));
+        let caret = vm.undo(None).expect("undo returns caret");
+        assert_eq!(caret, (0, 11));
+    }
+
+    #[test]
+    fn undo_restores_highlight_in_sync() {
+        // Same invariant as rust_edit_keeps_highlight_in_sync, but routing
+        // through undo. The highlight engine must still produce the same
+        // spans after a round trip.
+        let mut vm = EditorViewModel::from_text("fn main() {}\n", LanguageId::Rust);
+        vm.edit_with_caret(12, 12, " // x", Some((0, 12)));
+        // Pre-undo state has the comment.
+        let (_, spans) = vm.styled_line(0);
+        assert!(spans.iter().any(|s| s.style == Style::Comment));
+        let _ = vm.undo(None);
+        // Post-undo state has no comment, no Comment span.
+        assert_eq!(vm.line(0), "fn main() {}");
+        let (_, spans) = vm.styled_line(0);
+        assert!(!spans.iter().any(|s| s.style == Style::Comment));
+        let _ = vm.redo(None);
+        let (_, spans) = vm.styled_line(0);
+        assert!(spans.iter().any(|s| s.style == Style::Comment));
+    }
+
+    #[test]
+    fn undo_emits_exactly_one_edit_seq_per_step() {
+        // Each edit() call bumps edit_seq by 1; each undo/redo is also one
+        // edit() under the hood. This test pins the contract: undo/redo are
+        // observable to the diff view as ordinary edits, so the background
+        // diff picks them up correctly.
+        let mut vm = EditorViewModel::from_text("a\n", LanguageId::PlainText);
+        let baseline = vm.edit_seq();
+        vm.edit(1, 1, "b");
+        assert_eq!(vm.edit_seq(), baseline + 1);
+        let _ = vm.undo(None);
+        assert_eq!(vm.edit_seq(), baseline + 2);
+        let _ = vm.redo(None);
+        assert_eq!(vm.edit_seq(), baseline + 3);
+    }
+
+    #[test]
+    fn clear_history_drops_both_stacks() {
+        let mut vm = EditorViewModel::from_text("a\n", LanguageId::PlainText);
+        vm.edit(1, 1, "b");
+        let _ = vm.undo(None);
+        assert!(!vm.can_undo());
+        assert!(vm.can_redo());
+        vm.edit(0, 0, ">> ");
+        assert!(vm.can_undo());
+        vm.clear_history();
+        assert!(!vm.can_undo());
+        assert!(!vm.can_redo());
+    }
+
+    #[test]
+    fn edit_without_caret_snapshots_null_caret() {
+        // Plain edit() (no caret) must still produce an undoable state.
+        // The undo caret will be None — caller responsibility.
+        let mut vm = EditorViewModel::from_text("a\n", LanguageId::PlainText);
+        vm.edit(1, 1, "b");
+        let caret = vm.undo(None);
+        assert_eq!(caret, None);
+        assert_eq!(vm.document_text(), "a\n");
     }
 }

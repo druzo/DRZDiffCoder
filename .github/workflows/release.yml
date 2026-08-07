@@ -138,8 +138,8 @@ jobs:
         run: |
           cd crates/drz-app
           # cargo-wix init reads product name / version / manufacturer / license
-          # from Cargo.toml automatically. Only --force is needed.
-          cargo wix init --force --no-build
+          # from Cargo.toml. The --no-build flag is only for 'cargo wix' itself.
+          cargo wix init --force
           cargo wix --no-build
           mkdir -p "../../releases/$VERSION/windows-x86_64"
           cp target/wix/*.msi "../../releases/$VERSION/windows-x86_64/drzdiff_${VERSION}_x64.msi"

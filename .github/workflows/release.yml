@@ -137,12 +137,9 @@ jobs:
           VERSION: ${{ steps.ver.outputs.VERSION }}
         run: |
           cd crates/drz-app
-          cargo wix init --force \
-            --product-name "DRZ Diff" \
-            --product-version "$VERSION" \
-            --manufacturer "DRZ" \
-            --license "../../LICENSE" \
-            --no-build
+          # cargo-wix init reads product name / version / manufacturer / license
+          # from Cargo.toml automatically. Only --force is needed.
+          cargo wix init --force --no-build
           cargo wix --no-build
           mkdir -p "../../releases/$VERSION/windows-x86_64"
           cp target/wix/*.msi "../../releases/$VERSION/windows-x86_64/drzdiff_${VERSION}_x64.msi"

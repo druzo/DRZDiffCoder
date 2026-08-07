@@ -116,10 +116,13 @@ jobs:
 
       - name: Install cargo-wix + WiX Toolset
         run: |
-          cargo install cargo-wix --locked
+          # cargo-wix not used in this workflow — we drive candle+light directly
+          # via a hand-written .wxs. Verify WiX Toolset is present.
           if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
             choco install -y wixtoolset
           }
+          candle.exe /? | Out-Null
+          light.exe /?  | Out-Null
 
       - name: Generate icons (Windows + Linux .ico)
         run: ./scripts/release/make-icons.sh
@@ -131,20 +134,66 @@ jobs:
         run: |
           cargo build --release --target x86_64-pc-windows-msvc -p drz-app --locked
 
-      - name: Build Windows .msi via cargo-wix
+      - name: Build Windows .msi via WiX (candle + light)
         shell: bash
         env:
           VERSION: ${{ steps.ver.outputs.VERSION }}
         run: |
-          cd crates/drz-app
-          # cargo-wix reads product name / version / manufacturer / license from
-          # Cargo.toml. In a workspace we must pass -p explicitly.
-          cargo wix init --force -p drz-app
-          cargo wix --no-build -p drz-app
-          mkdir -p "../../releases/$VERSION/windows-x86_64"
-          cp target/wix/*.msi "../../releases/$VERSION/windows-x86_64/drzdiff_${VERSION}_x64.msi"
-          cp "target/x86_64-pc-windows-msvc/release/drzdiff.exe" "../../releases/$VERSION/windows-x86_64/"
-          cp ../../scripts/release/*.bat "../../releases/$VERSION/windows-x86_64/" 2>/dev/null || true
+          set -e
+          EXE="target/x86_64-pc-windows-msvc/release/drzdiff.exe"
+          [ -f "$EXE" ] || { echo "missing $EXE" >&2; exit 1; }
+
+          WXS_DIR="releases/${VERSION}/windows-x86_64/.wix"
+          mkdir -p "$WXS_DIR"
+
+          # Convert forward slashes to backslashes so candle.exe parses Source.
+          EXE_WIN="$(cygpath -w "$EXE")"
+
+          cat > "$WXS_DIR/main.wxs" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+            <Product Id="*" Name="DRZ Diff" Version="${VERSION}" Manufacturer="DRZ"
+                     Language="1033" UpgradeCode="d4f3b6a1-2c0e-4a8e-9f7a-1b2c3d4e5f60">
+              <Package Description="Source code diff tool" Manufacturer="DRZ"
+                       InstallerVersion="500" Compressed="yes" InstallScope="perMachine"/>
+              <Media Id="1" Cabinet="drzdiff.cab" EmbedCab="yes"/>
+              <Directory Id="TARGETDIR" Name="SourceDir">
+                <Directory Id="ProgramFilesFolder">
+                  <Directory Id="INSTALLDIR" Name="DRZ Diff">
+                    <Component Id="MainExecutable" Guid="c5a3b6a1-2c0e-4a8e-9f7a-1b2c3d4e5f60">
+                      <File Id="DrzDiffExe" Name="drzdiff.exe" Source="${EXE_WIN}" KeyPath="yes"/>
+                    </Component>
+                  </Directory>
+                </Directory>
+                <Directory Id="ProgramMenuFolder">
+                  <Directory Id="MenuFolder" Name="DRZ Diff">
+                    <Component Id="Shortcut" Guid="c5a3b6a2-2c0e-4a8e-9f7a-1b2c3d4e5f60">
+                      <Shortcut Id="StartMenuShortcut" Name="DRZ Diff"
+                                Target="[INSTALLDIR]drzdiff.exe"/>
+                    </Component>
+                  </Directory>
+                </Directory>
+              </Directory>
+              <Feature Id="MainFeature" Title="DRZ Diff" Level="1">
+                <ComponentRef Id="MainExecutable"/>
+                <ComponentRef Id="Shortcut"/>
+              </Feature>
+            </Product>
+          </Wix>
+          EOF
+
+          cd "$WXS_DIR"
+          candle.exe -nologo main.wxs
+          light.exe -nologo -ext WixUIExtension -sval -o "../drzdiff_${VERSION}_x64.msi" main.wixobj
+          cd - >/dev/null
+          rm -rf "$WXS_DIR"
+
+          # Copy the raw .exe alongside.
+          cp "$EXE" "releases/${VERSION}/windows-x86_64/"
+          # And the install/uninstall scripts.
+          cp scripts/release/*.bat "releases/${VERSION}/windows-x86_64/" 2>/dev/null || true
+
+          ls -la "releases/${VERSION}/windows-x86_64/"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

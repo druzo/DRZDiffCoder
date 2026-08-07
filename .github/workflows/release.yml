@@ -1,62 +1,361 @@
+# .github/workflows/release.yml
+# Tag-triggered release pipeline.
+# Triggers: push of a tag matching v*.*.* (e.g. v0.1.2).
+# Matrix:   linux-x86_64, linux-arm64, windows-x86_64, macos-x86_64, macos-arm64.
+# Output:   every artifact uploaded to the GitHub Release for the tag.
 name: release
 
 on:
   push:
-    tags: ['v*']
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Override version (defaults to git tag)'
-        required: false
+      tag:
+        description: "Tag to release (must already exist, e.g. v0.1.2)"
+        required: true
+        default: "v0.1.2"
 
 permissions:
-  contents: write
+  contents: write   # needed for softprops/action-gh-release to upload assets
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build cross-platform artifacts
+  linux-x86_64:
+    name: Linux x86_64 (.deb + .rpm + .AppImage)
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-
-      - name: Resolve version
-        id: version
+      - name: Resolve VERSION
+        id: ver
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            TAG="${GITHUB_REF_NAME#v}"
-            echo "value=$TAG" >> "$GITHUB_OUTPUT"
-          fi
-          echo "VERSION=${{ steps.version.outputs.value }}" >> "$GITHUB_ENV"
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" != v* ]]; then TAG="${{ github.event.inputs.tag }}"; fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Install prereqs
+      - name: Install build prereqs
         run: sudo ./scripts/release/install-prereqs.sh
 
-      - name: Cache cargo target
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ./crates/drz-app -> target
+      - name: Generate icons
+        run: ./scripts/release/make-icons.sh
 
-      - name: Run release pipeline
-        run: ./scripts/release.sh
+      - name: Build Linux x86_64 artifacts
         env:
-          VERSION: ${{ steps.version.outputs.value }}
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+        run: |
+          PLATFORMS=linux-x86_64 ./scripts/release.sh
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: drzdiff-${{ steps.version.outputs.value }}
-          path: releases/${{ steps.version.outputs.value }}/**/*
-          if-no-files-found: warn
+          name: linux-x86_64
+          path: |
+            releases/${{ steps.ver.outputs.VERSION }}/linux-x86_64/**
+            !releases/${{ steps.ver.outputs.VERSION }}/linux-x86_64/**/*.deb-build/**
 
-      - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+  linux-arm64:
+    name: Linux arm64 (.deb + .rpm)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve VERSION
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" != v* ]]; then TAG="${{ github.event.inputs.tag }}"; fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install build prereqs
+        run: sudo ./scripts/release/install-prereqs.sh
+
+      - name: Generate icons
+        run: ./scripts/release/make-icons.sh
+
+      - name: Add aarch64 cross target
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: Build Linux arm64 artifacts
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+        run: |
+          PLATFORMS=linux-arm64 ./scripts/release.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: |
+            releases/${{ steps.ver.outputs.VERSION }}/linux-arm64/**
+            !releases/${{ steps.ver.outputs.VERSION }}/linux-arm64/**/*.deb-build/**
+
+  windows-x86_64:
+    name: Windows x86_64 (.msi + .exe)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve VERSION
+        id: ver
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notlike 'v*') { $tag = "${{ github.event.inputs.tag }}" }
+          "VERSION=$($tag -replace '^v','')" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install cargo-wix + WiX Toolset
+        run: |
+          cargo install cargo-wix --locked
+          choco install -y wixtoolset --version=3.14.0
+
+      - name: Generate icons (Windows + Linux .ico)
+        run: ./scripts/release/make-icons.sh
+
+      - name: Build Windows .exe (release)
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc -p drz-app --locked
+
+      - name: Build Windows .msi via cargo-wix
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+        run: |
+          cd crates/drz-app
+          cargo wix init --force \
+            --product-name "DRZ Diff" \
+            --product-version "$VERSION" \
+            --manufacturer "DRZ" \
+            --license "../../LICENSE" \
+            --no-build
+          cargo wix --no-build
+          mkdir -p "../../releases/$VERSION/windows-x86_64"
+          cp target/wix/*.msi "../../releases/$VERSION/windows-x86_64/drzdiff_${VERSION}_x64.msi"
+          cp "target/x86_64-pc-windows-msvc/release/drzdiff.exe" "../../releases/$VERSION/windows-x86_64/"
+          cp ../../scripts/release/*.bat "../../releases/$VERSION/windows-x86_64/" 2>/dev/null || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: releases/${{ steps.ver.outputs.VERSION }}/windows-x86_64/**
+
+  macos-x86_64:
+    name: macOS x86_64 (.dmg + .zip + .app)
+    runs-on: macos-13
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve VERSION
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" != v* ]]; then TAG="${{ github.event.inputs.tag }}"; fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust + targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Generate icons
+        run: ./scripts/release/make-icons.sh
+
+      - name: Build macOS x86_64 artifacts
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          set -e
+          STAGE="releases/${VERSION}/darwin-x86_64"
+          mkdir -p "$STAGE"
+          cargo build --release --target x86_64-apple-darwin -p drz-app --locked
+          BIN="target/x86_64-apple-darwin/release/drzdiff"
+          APP="$STAGE/DRZDiff.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$BIN" "$APP/Contents/MacOS/DRZDiff"
+          chmod +x "$APP/Contents/MacOS/DRZDiff"
+          [ -f icons/AppIcon.icns ] && cp icons/AppIcon.icns "$APP/Contents/Resources/"
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>           <string>DRZDiff</string>
+            <key>CFBundleIconFile</key>             <string>AppIcon.icns</string>
+            <key>CFBundleIdentifier</key>           <string>app.drzdiff</string>
+            <key>CFBundleName</key>                 <string>DRZ Diff</string>
+            <key>CFBundleShortVersionString</key>   <string>${VERSION}</string>
+            <key>CFBundleVersion</key>              <string>${VERSION}</string>
+            <key>LSMinimumSystemVersion</key>       <string>11.0</string>
+            <key>NSHighResolutionCapable</key>      <true/>
+          </dict>
+          </plist>
+          EOF
+          codesign --force --deep --sign - "$APP" 2>/dev/null || true
+          ( cd "$STAGE" && zip -qr "DRZDiff_${VERSION}_x86_64.zip" "DRZDiff.app" )
+          # DMG via hdiutil (native on macOS runners; no genisoimage)
+          DMG_VOL="DRZDiff ${VERSION}"
+          DMG_OUT="${STAGE}/DRZDiff_${VERSION}_x86_64.dmg"
+          STAGE_TMP="$STAGE/.dmg-stage"
+          rm -rf "$STAGE_TMP"
+          mkdir -p "$STAGE_TMP/Applications"
+          cp -R "$APP" "$STAGE_TMP/Applications/"
+          ln -snf Applications "$STAGE_TMP/Applications_DRZDiff" 2>/dev/null || true
+          MOUNT="$(mktemp -d -t drzdiff-dmg.XXXXXX)"
+          hdiutil create -ov -volname "$DMG_VOL" -fs HFS+ -srcfolder "$STAGE_TMP" "$MOUNT/DRZDiff.dmg" >/dev/null
+          hdiutil convert -format UDZO -o "$DMG_OUT" "$MOUNT/DRZDiff.dmg" >/dev/null
+          rm -rf "$MOUNT" "$STAGE_TMP"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64
+          path: releases/${{ steps.ver.outputs.VERSION }}/darwin-x86_64/**
+
+  macos-arm64:
+    name: macOS arm64 (.dmg + .zip + .app)
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve VERSION
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" != v* ]]; then TAG="${{ github.event.inputs.tag }}"; fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust + targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Generate icons
+        run: ./scripts/release/make-icons.sh
+
+      - name: Build macOS arm64 artifacts
+        env:
+          VERSION: ${{ steps.ver.outputs.VERSION }}
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          set -e
+          STAGE="releases/${VERSION}/darwin-arm64"
+          mkdir -p "$STAGE"
+          cargo build --release --target aarch64-apple-darwin -p drz-app --locked
+          BIN="target/aarch64-apple-darwin/release/drzdiff"
+          APP="$STAGE/DRZDiff.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$BIN" "$APP/Contents/MacOS/DRZDiff"
+          chmod +x "$APP/Contents/MacOS/DRZDiff"
+          [ -f icons/AppIcon.icns ] && cp icons/AppIcon.icns "$APP/Contents/Resources/"
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>           <string>DRZDiff</string>
+            <key>CFBundleIconFile</key>             <string>AppIcon.icns</string>
+            <key>CFBundleIdentifier</key>           <string>app.drzdiff</string>
+            <key>CFBundleName</key>                 <string>DRZ Diff</string>
+            <key>CFBundleShortVersionString</key>   <string>${VERSION}</string>
+            <key>CFBundleVersion</key>              <string>${VERSION}</string>
+            <key>LSMinimumSystemVersion</key>       <string>11.0</string>
+            <key>NSHighResolutionCapable</key>      <true/>
+          </dict>
+          </plist>
+          EOF
+          codesign --force --deep --sign - "$APP" 2>/dev/null || true
+          ( cd "$STAGE" && zip -qr "DRZDiff_${VERSION}_arm64.zip" "DRZDiff.app" )
+          DMG_VOL="DRZDiff ${VERSION}"
+          DMG_OUT="${STAGE}/DRZDiff_${VERSION}_arm64.dmg"
+          STAGE_TMP="$STAGE/.dmg-stage"
+          rm -rf "$STAGE_TMP"
+          mkdir -p "$STAGE_TMP/Applications"
+          cp -R "$APP" "$STAGE_TMP/Applications/"
+          ln -snf Applications "$STAGE_TMP/Applications_DRZDiff" 2>/dev/null || true
+          MOUNT="$(mktemp -d -t drzdiff-dmg.XXXXXX)"
+          hdiutil create -ov -volname "$DMG_VOL" -fs HFS+ -srcfolder "$STAGE_TMP" "$MOUNT/DRZDiff.dmg" >/dev/null
+          hdiutil convert -format UDZO -o "$DMG_OUT" "$MOUNT/DRZDiff.dmg" >/dev/null
+          rm -rf "$MOUNT" "$STAGE_TMP"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: releases/${{ steps.ver.outputs.VERSION }}/darwin-arm64/**
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-24.04
+    needs: [linux-x86_64, linux-arm64, windows-x86_64, macos-x86_64, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve VERSION + TAG
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" != v* ]]; then TAG="${{ github.event.inputs.tag }}"; fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "TAG=${TAG}"        >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Compute SHA256SUMS.txt
+        run: |
+          cd dist
+          : > SHA256SUMS.txt
+          find . -type f -name 'SHA256SUMS' -prune -o \
+                 -type d -name 'deb-build' -prune -o \
+                 -type f -print0 \
+            | while IFS= read -r -d '' f; do
+                # rewrite the path so the sums are relative to the dist root
+                rel="${f#./}"
+                sum="$(sha256sum "$f" | awk '{print $1}')"
+                echo "${sum}  ${rel}" >> SHA256SUMS.txt
+              done
+          echo "----- SHA256SUMS.txt -----"
+          cat SHA256SUMS.txt
+
+      - name: Find notes file
+        id: notes
+        run: |
+          NOTES="$(find docs/superpowers/specs -maxdepth 2 -type f \
+                     \( -name "${{ steps.ver.outputs.VERSION }}-notes.md" \
+                        -o -name "${{ steps.ver.outputs.VERSION }}-release-notes.md" \) \
+                     | head -1)"
+          if [ -z "$NOTES" ] || [ ! -f "$NOTES" ]; then
+            NOTES="RELEASE-NOTES.md"
+          fi
+          echo "notes_path=${NOTES}" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: "DRZ Diff ${{ steps.version.outputs.value }}"
-          generate_release_notes: true
+          tag_name: ${{ steps.ver.outputs.TAG }}
+          name: "DRZ Diff ${{ steps.ver.outputs.VERSION }}"
+          generate_release_notes: false
+          body_path: ${{ steps.notes.outputs.notes_path }}
+          fail_on_unmatched_files: false
           files: |
-            releases/${{ steps.version.outputs.value }}/**/*
+            dist/**/*
+            !dist/**/*.deb-build/**

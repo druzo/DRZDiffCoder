@@ -1,20 +1,58 @@
-name: CI
+# .github/workflows/ci.yml
+# PR + push CI: fmt --check -> clippy -D warnings -> test --workspace.
+# Matches AGENTS.md: "CI runs those three checks in order".
+name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
+    branches: [main, develop]
 
 jobs:
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  ci:
+    name: fmt / clippy / test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            crates/drz-core -> target
+            crates/drz-highlight -> target
+            crates/drz-viewmodel -> target
+            crates/drz-editor -> target
+            crates/drz-diff-ui -> target
+            crates/drz-app -> target
+
+      - name: Install Linux system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-0 libxcb-render0 libxcb-shape0 libxcb-xfixes0 \
+            libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libxkbcommon0 libatspi2.0-0 \
+            xvfb
+
+      - name: rustfmt --check
+        run: cargo fmt --all -- --check
+
+      - name: clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test --workspace (headless)
+        env:
+          DISPLAY: :99
+        run: |
+          Xvfb :99 -screen 0 1280x720x24 &
+          sleep 1
+          cargo test --workspace --no-fail-fast
+        shell: bash

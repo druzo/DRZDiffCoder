@@ -127,16 +127,13 @@ jobs:
     name: macOS (Intel)
     needs: version
     runs-on: macos-13
-    timeout-minutes: 120
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ./crates/drz-app -> target
-
-      - name: Install ImageMagick
-        run: brew install imagemagick || true
+          shared-key: darwin-x86_64
 
       - name: Build macOS x86_64 artifacts
         run: ./scripts/ci/build-macos-native.sh x86_64
@@ -153,16 +150,13 @@ jobs:
     name: macOS (Apple Silicon)
     needs: version
     runs-on: macos-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ./crates/drz-app -> target
-
-      - name: Install ImageMagick
-        run: brew install imagemagick || true
+          shared-key: darwin-arm64
 
       - name: Build macOS arm64 artifacts
         run: ./scripts/ci/build-macos-native.sh arm64

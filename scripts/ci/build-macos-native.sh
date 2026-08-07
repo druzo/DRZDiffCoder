@@ -37,11 +37,16 @@ cargo build --release --target "$TARGET" -p drz-app --locked
 BIN="target/${TARGET}/release/drzdiff"
 [ -f "$BIN" ] || { echo "missing $BIN" >&2; exit 1; }
 
-# Generate .icns if missing
+# Generate .icns if missing (requires ImageMagick; usually committed already).
 ICNS="$REPO_ROOT/icons/AppIcon.icns"
 if [ ! -f "$ICNS" ]; then
   echo "[macos] generating AppIcon.icns"
-  "$REPO_ROOT/scripts/release/make-icons.sh"
+  if command -v magick >/dev/null 2>&1 || command -v convert >/dev/null 2>&1; then
+    "$REPO_ROOT/scripts/release/make-icons.sh"
+  else
+    echo "ERROR: AppIcon.icns is missing and ImageMagick is not installed" >&2
+    exit 1
+  fi
 fi
 
 # Build .app bundle ---------------------------------------------------------
@@ -90,7 +95,7 @@ rm -rf "$STAGE_TMP"
 mkdir -p "$STAGE_TMP/Applications"
 cp -R "$APP_DIR" "$STAGE_TMP/Applications/"
 
-hdiutil create -volname "$DMG_VOL" -srcfolder "$STAGE_TMP" -ov -format UDZO "$DMG_OUT" >/dev/null
+hdiutil create -volname "$DMG_VOL" -srcfolder "$STAGE_TMP" -ov -format UDZO "$DMG_OUT"
 rm -rf "$STAGE_TMP"
 
 # install.sh ----------------------------------------------------------------
@@ -136,7 +141,7 @@ cd "$STAGE"
     [ "$f" = "SHA256SUMS" ] && continue
     [ -f "$f" ] && sha256sum "$f"
   done
-  find DRZDiff.app -type f -exec sha256sum {} +
+  find DRZDiff.app -type f -print0 | xargs -0 sha256sum
 } | sort -u > SHA256SUMS
 
 ls -la

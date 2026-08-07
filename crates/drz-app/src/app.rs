@@ -1,6 +1,7 @@
 use crate::theme;
 use crate::welcome::WelcomeView;
-use drz_diff_ui::DiffView;
+use drz_diff_ui::{DiffView, EditAction};
+use drz_editor::EditorIcons;
 use drz_viewmodel::{AppViewModel, LanguageId};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -47,6 +48,10 @@ pub struct DrzApp {
     swap_icon: Option<egui::TextureHandle>,
     /// Pre-rendered language icon textures keyed by lowercased label slug.
     lang_textures: HashMap<String, Option<egui::TextureHandle>>,
+    /// Editor-menu SVG textures (copy/cut/paste/undo/redo/select-all).
+    /// Owned by the app shell so the menu bar can render without reaching
+    /// into the diff view's per-pane editor icons.
+    menu_icons: EditorIcons,
     dark: bool,
 }
 
@@ -64,12 +69,15 @@ impl DrzApp {
         let brand_icon = crate::icon::load_texture(&cc.egui_ctx);
         let swap_icon = load_swap_icon(&cc.egui_ctx);
         let lang_textures = build_lang_textures(&cc.egui_ctx);
+        let mut menu_icons = EditorIcons::new();
+        menu_icons.ensure_textures(&cc.egui_ctx);
         DrzApp {
             vm,
             diff_view: DiffView::new(),
             brand_icon,
             swap_icon,
             lang_textures,
+            menu_icons,
             dark,
         }
     }
@@ -210,6 +218,28 @@ impl eframe::App for DrzApp {
 
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.vm.title()));
 
+        // Compute can_undo/can_redo from the diff view directly. We have
+        // a borrow conflict between `self.vm.diff()` and `self.diff_view`
+        // (both live on `self`), so pull the booleans out before the menu
+        // paint closure takes `&mut self`.
+        let (has_diff, can_undo, can_redo) = match self.vm.diff() {
+            Some(d) => (true, self.diff_view.can_undo(d), self.diff_view.can_redo(d)),
+            None => (false, false, false),
+        };
+
+        paint_menu_bar(
+            ctx,
+            has_diff,
+            can_undo,
+            can_redo,
+            &self.menu_icons,
+            &mut |action| {
+                if let Some(d) = self.vm.diff_mut() {
+                    self.diff_view.dispatch_edit(action, d, ctx);
+                }
+            },
+        );
+
         paint_brand_bar(
             ctx,
             self.brand_icon.as_ref(),
@@ -305,6 +335,125 @@ fn load_swap_icon(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     let (w, h) = (img.width() as usize, img.height() as usize);
     let color = egui::ColorImage::from_rgba_unmultiplied([w, h], img.as_raw());
     Some(ctx.load_texture("drz_swap_icon", color, egui::TextureOptions::LINEAR))
+}
+
+fn paint_menu_bar(
+    ctx: &egui::Context,
+    has_diff: bool,
+    can_undo: bool,
+    can_redo: bool,
+    icons: &EditorIcons,
+    on_action: &mut dyn FnMut(EditAction),
+) {
+    let frame = egui::Frame::default()
+        .fill(if ctx.style().visuals.dark_mode {
+            egui::Color32::from_rgb(28, 34, 60)
+        } else {
+            egui::Color32::from_rgb(238, 240, 246)
+        })
+        .inner_margin(egui::Margin::symmetric(8, 4));
+    egui::TopBottomPanel::top("menu")
+        .frame(frame)
+        .resizable(false)
+        .exact_height(28.0)
+        .show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("Edit", |ui| {
+                    // Undo / Redo: enabled only when there's a history on
+                    // either pane. The dispatcher routes to the focused
+                    // side, so we don't need to know which pane here.
+                    let undo_btn = icons
+                        .undo()
+                        .map(|t| {
+                            egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Undo")
+                        })
+                        .unwrap_or_else(|| egui::Button::new("Undo"));
+                    if ui
+                        .add_enabled(has_diff && can_undo, undo_btn)
+                        .on_hover_text("Undo the last edit (Ctrl+Z)")
+                        .clicked()
+                    {
+                        on_action(EditAction::Undo);
+                        ui.close_menu();
+                    }
+                    let redo_btn = icons
+                        .redo()
+                        .map(|t| {
+                            egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Redo")
+                        })
+                        .unwrap_or_else(|| egui::Button::new("Redo"));
+                    if ui
+                        .add_enabled(has_diff && can_redo, redo_btn)
+                        .on_hover_text("Redo the last undone edit (Ctrl+Y / Ctrl+Shift+Z)")
+                        .clicked()
+                    {
+                        on_action(EditAction::Redo);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    let cut_btn = icons
+                        .cut()
+                        .map(|t| {
+                            egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Cut")
+                        })
+                        .unwrap_or_else(|| egui::Button::new("Cut"));
+                    if ui
+                        .add_enabled(has_diff, cut_btn)
+                        .on_hover_text("Cut the selection (Ctrl+X)")
+                        .clicked()
+                    {
+                        on_action(EditAction::Cut);
+                        ui.close_menu();
+                    }
+                    let copy_btn = icons
+                        .copy()
+                        .map(|t| {
+                            egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Copy")
+                        })
+                        .unwrap_or_else(|| egui::Button::new("Copy"));
+                    if ui
+                        .add_enabled(has_diff, copy_btn)
+                        .on_hover_text("Copy the selection (Ctrl+C)")
+                        .clicked()
+                    {
+                        on_action(EditAction::Copy);
+                        ui.close_menu();
+                    }
+                    let paste_btn = icons
+                        .paste()
+                        .map(|t| {
+                            egui::Button::image_and_text((t.id(), egui::vec2(14.0, 14.0)), "Paste")
+                        })
+                        .unwrap_or_else(|| egui::Button::new("Paste"));
+                    if ui
+                        .add_enabled(has_diff, paste_btn)
+                        .on_hover_text("Paste from clipboard (Ctrl+V)")
+                        .clicked()
+                    {
+                        on_action(EditAction::Paste);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    let select_all_btn = icons
+                        .select_all()
+                        .map(|t| {
+                            egui::Button::image_and_text(
+                                (t.id(), egui::vec2(14.0, 14.0)),
+                                "Select All",
+                            )
+                        })
+                        .unwrap_or_else(|| egui::Button::new("Select All"));
+                    if ui
+                        .add_enabled(has_diff, select_all_btn)
+                        .on_hover_text("Select all text (Ctrl+A)")
+                        .clicked()
+                    {
+                        on_action(EditAction::SelectAll);
+                        ui.close_menu();
+                    }
+                });
+            });
+        });
 }
 
 fn paint_brand_bar(

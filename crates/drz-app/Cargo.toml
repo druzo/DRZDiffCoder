@@ -20,6 +20,7 @@ usvg.workspace = true
 tiny-skia.workspace = true
 drz-viewmodel = { path = "../drz-viewmodel" }
 drz-diff-ui = { path = "../drz-diff-ui" }
+drz-editor = { path = "../drz-editor" }
 
 [dev-dependencies]
 assert_cmd = "2"

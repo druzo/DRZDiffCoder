@@ -1,6 +1,9 @@
 const COPY_SVG: &[u8] = include_bytes!("../../../icons/doc.on.clipboard.svg");
 const CUT_SVG: &[u8] = include_bytes!("../../../icons/scissors.svg");
 const PASTE_SVG: &[u8] = include_bytes!("../../../icons/doc.on.clipboard.fill.svg");
+const UNDO_SVG: &[u8] = include_bytes!("../../../icons/arrow-back-up.svg");
+const REDO_SVG: &[u8] = include_bytes!("../../../icons/arrow-forward-up.svg");
+const SELECT_ALL_SVG: &[u8] = include_bytes!("../../../icons/select-all.svg");
 
 const ICON_PX: u32 = 14;
 
@@ -8,6 +11,9 @@ pub struct EditorIcons {
     copy: Option<egui::TextureHandle>,
     cut: Option<egui::TextureHandle>,
     paste: Option<egui::TextureHandle>,
+    undo: Option<egui::TextureHandle>,
+    redo: Option<egui::TextureHandle>,
+    select_all: Option<egui::TextureHandle>,
 }
 
 impl EditorIcons {
@@ -16,6 +22,9 @@ impl EditorIcons {
             copy: None,
             cut: None,
             paste: None,
+            undo: None,
+            redo: None,
+            select_all: None,
         }
     }
 
@@ -29,6 +38,15 @@ impl EditorIcons {
         if self.paste.is_none() {
             self.paste = rasterize(ctx, "drz_icon_paste", PASTE_SVG);
         }
+        if self.undo.is_none() {
+            self.undo = rasterize(ctx, "drz_icon_undo", UNDO_SVG);
+        }
+        if self.redo.is_none() {
+            self.redo = rasterize(ctx, "drz_icon_redo", REDO_SVG);
+        }
+        if self.select_all.is_none() {
+            self.select_all = rasterize(ctx, "drz_icon_select_all", SELECT_ALL_SVG);
+        }
     }
 
     pub fn copy(&self) -> Option<&egui::TextureHandle> {
@@ -39,6 +57,15 @@ impl EditorIcons {
     }
     pub fn paste(&self) -> Option<&egui::TextureHandle> {
         self.paste.as_ref()
+    }
+    pub fn undo(&self) -> Option<&egui::TextureHandle> {
+        self.undo.as_ref()
+    }
+    pub fn redo(&self) -> Option<&egui::TextureHandle> {
+        self.redo.as_ref()
+    }
+    pub fn select_all(&self) -> Option<&egui::TextureHandle> {
+        self.select_all.as_ref()
     }
 }
 
@@ -87,6 +114,9 @@ mod tests {
         assert!(icons.copy().is_none());
         assert!(icons.cut().is_none());
         assert!(icons.paste().is_none());
+        assert!(icons.undo().is_none());
+        assert!(icons.redo().is_none());
+        assert!(icons.select_all().is_none());
     }
 
     #[test]
@@ -96,5 +126,8 @@ mod tests {
         assert_eq!(a.copy().is_none(), b.copy().is_none());
         assert_eq!(a.cut().is_none(), b.cut().is_none());
         assert_eq!(a.paste().is_none(), b.paste().is_none());
+        assert_eq!(a.undo().is_none(), b.undo().is_none());
+        assert_eq!(a.redo().is_none(), b.redo().is_none());
+        assert_eq!(a.select_all().is_none(), b.select_all().is_none());
     }
 }

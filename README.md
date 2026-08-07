@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="releases/0.1.0/"><img alt="release" src="https://img.shields.io/badge/release-v0.1.0-blueviolet?style=for-the-badge"></a>
+  <a href="releases/0.1.2/"><img alt="release" src="https://img.shields.io/badge/release-v0.1.2-blueviolet?style=for-the-badge"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-GPL--3.0-blue?style=for-the-badge"></a>
   <a href="#supported-languages"><img alt="languages" src="https://img.shields.io/badge/languages-22-success?style=for-the-badge"></a>
   <a href="#installation"><img alt="platforms" src="https://img.shields.io/badge/platforms-windows%20%C2%B7%20linux%20%C2%B7%20macOS-lightgrey?style=for-the-badge"></a>
@@ -96,7 +96,7 @@ Scroll sync: both panes share a scroll-offset model; alignment is computed from 
 
 ## 📦 Installation
 
-> **Download** the pre-built artifacts from [`releases/0.1.0/`](releases/0.1.0/) and pick your platform. Every artifact ships with a per-folder `SHA256SUMS` — verify with `sha256sum -c SHA256SUMS`.
+> **Download** the pre-built artifacts from [`releases/0.1.2/`](releases/0.1.2/) and pick your platform. Every artifact ships with a per-folder `SHA256SUMS` — verify with `sha256sum -c SHA256SUMS`.
 
 ### 🪟 Windows
 
@@ -104,7 +104,7 @@ Scroll sync: both panes share a scroll-offset model; alignment is computed from 
 
 **Option A — Installer (`.msi`, built on CI):**
 
-1. Download `drzdiff_0.1.0_x64.msi` from `releases/0.1.0/windows-x86_64/`.
+1. Download `drzdiff_0.1.2_x64.msi` from `releases/0.1.2/windows-x86_64/`.
 2. Double-click the `.msi`. Windows SmartScreen may warn — click *More info → Run anyway* (unsigned binaries).
 3. Find **DRZ Diff** in the Start Menu.
 
@@ -135,7 +135,7 @@ Usage: drzdiff [LEFT] [RIGHT]
 **Option A — Debian package (recommended):**
 ```bash
 cd linux-x86_64
-sudo dpkg -i drzdiff_0.1.0_amd64.deb
+sudo dpkg -i drzdiff_0.1.2_amd64.deb
 sudo apt-get install -f -y   # resolve any missing system libs
 drzdiff
 ```
@@ -143,8 +143,8 @@ drzdiff
 **Option B — AppImage (universal):**
 ```bash
 cd linux-x86_64
-chmod +x drzdiff-0.1.0-x86_64.AppImage
-./drzdiff-0.1.0-x86_64.AppImage
+chmod +x drzdiff-0.1.2-x86_64.AppImage
+./drzdiff-0.1.2-x86_64.AppImage
 ```
 
 Or use the helper script:
@@ -156,7 +156,7 @@ Or use the helper script:
 
 ```bash
 cd linux-arm64
-sudo dpkg -i drzdiff_0.1.0_arm64.deb
+sudo dpkg -i drzdiff_0.1.2_arm64.deb
 sudo apt-get install -f -y
 drzdiff
 ```
@@ -377,7 +377,7 @@ Branch flow: `main` ← `develop` ← `feature/*`. PRs target `develop`.
 
 ## 🛠️ Building Release Artifacts
 
-Reproduce the `releases/0.1.0/` folder from this checkout:
+Reproduce the `releases/0.1.2/` folder from this checkout:
 
 ```bash
 # one-time host setup
@@ -390,13 +390,13 @@ sudo ./scripts/release/install-prereqs.sh
 Or pick specific platforms:
 
 ```bash
-VERSION=0.1.0 PLATFORMS="windows linux-x86_64 linux-arm64 darwin-x86_64 darwin-arm64" \
+VERSION=0.1.2 PLATFORMS="windows linux-x86_64 linux-arm64 darwin-x86_64 darwin-arm64" \
   ./scripts/release.sh
 ```
 
 The pipeline is **idempotent** — re-running with the same `VERSION` overwrites prior artifacts.
 
-CI wires this up via `.github/workflows/release.yml`: push a tag like `v0.1.0` and the workflow builds every platform, attaches all installers to a GitHub Release, and uploads `SHA256SUMS`.
+CI wires this up via `.github/workflows/release.yml`: push a tag like `v0.1.2` and the workflow builds every platform, attaches all installers to a GitHub Release, and uploads `SHA256SUMS`.
 
 ---
 
@@ -441,7 +441,7 @@ Or right-click → *Open* the first time to bypass Gatekeeper.
 <details>
 <summary><strong>On Windows: SmartScreen warning</strong></summary>
 
-Binaries are unsigned for v0.1.0. Click *More info → Run anyway*. Production deployments should sign with an Authenticode certificate.
+Binaries are unsigned for v0.1.2. Click *More info → Run anyway*. Production deployments should sign with an Authenticode certificate.
 
 </details>
 
@@ -517,7 +517,7 @@ Copyright (C) 2026 DRZ
 - [MVP implementation plan](docs/superpowers/plans/2026-08-05-drzdiffcoder-mvp.md).
 - [Selection + clipboard + context-menu spec](docs/superpowers/specs/2026-08-06-editor-selection-clipboard-design.md).
 - [Release-pipeline design](docs/superpowers/specs/2026-08-06-release-pipeline-design.md).
-- [Release notes for v0.1.0](releases/0.1.0/RELEASE-NOTES.md).
+- [Release notes for v0.1.2](releases/0.1.2/RELEASE-NOTES.md).
 
 ---
 

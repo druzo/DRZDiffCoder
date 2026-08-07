@@ -1,7 +1,7 @@
 # crates/drz-editor/Cargo.toml
 [package]
 name = "drz-editor"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 
 [dependencies]

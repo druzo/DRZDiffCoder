@@ -1,7 +1,7 @@
 # crates/drz-viewmodel/Cargo.toml
 [package]
 name = "drz-viewmodel"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 
 [dependencies]

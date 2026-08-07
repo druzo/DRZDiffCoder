@@ -142,6 +142,8 @@ jobs:
         run: arch -x86_64 ./scripts/ci/build-macos-native.sh x86_64
         env:
           VERSION: ${{ needs.version.outputs.value }}
+          # Override the osxcross linker from .cargo/config.toml on native macOS runners.
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER: clang
 
       - uses: actions/upload-artifact@v4
         with:
@@ -165,6 +167,7 @@ jobs:
         run: ./scripts/ci/build-macos-native.sh arm64
         env:
           VERSION: ${{ needs.version.outputs.value }}
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: clang
 
       - uses: actions/upload-artifact@v4
         with:

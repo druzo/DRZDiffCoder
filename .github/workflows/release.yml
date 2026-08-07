@@ -117,7 +117,10 @@ jobs:
       - name: Install cargo-wix + WiX Toolset
         run: |
           cargo install cargo-wix --locked
-          choco install -y wixtoolset --version=3.14.0
+          # WiX is typically pre-installed on windows-latest; only install if missing.
+          if ! (Get-Command candle.exe -ErrorAction SilentlyContinue) {
+            choco install -y wixtoolset
+          }
 
       - name: Generate icons (Windows + Linux .ico)
         run: ./scripts/release/make-icons.sh
@@ -155,7 +158,7 @@ jobs:
 
   macos-x86_64:
     name: macOS x86_64 (.dmg + .zip + .app)
-    runs-on: macos-13
+    runs-on: macos-14
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -170,6 +173,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin
+
+      - name: Install dmg tools
+        run: |
+          brew install libdmg-hfsplus cdrtools || true
+
+      - name: Install pillow (icon generation fallback)
+        run: |
+          python3 -m pip install --user --break-system-packages pillow 2>/dev/null \
+            || python3 -m pip install --user pillow 2>/dev/null \
+            || brew install pillow
 
       - name: Generate icons
         run: ./scripts/release/make-icons.sh
@@ -243,6 +256,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+
+      - name: Install dmg tools
+        run: |
+          brew install libdmg-hfsplus cdrtools || true
+
+      - name: Install pillow (icon generation fallback)
+        run: |
+          python3 -m pip install --user --break-system-packages pillow 2>/dev/null \
+            || python3 -m pip install --user pillow 2>/dev/null \
+            || brew install pillow
 
       - name: Generate icons
         run: ./scripts/release/make-icons.sh

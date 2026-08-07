@@ -47,6 +47,18 @@ else
   $SUDO apt-get install -y --no-install-recommends "${APT_PKGS[@]}"
 fi
 
+# 1b. rustup install -------------------------------------------------------
+# CI runners (e.g. ubuntu-24.04 on GitHub Actions) start without rustup.
+# Install stable + minimal profile if rustup is missing.
+if ! command -v rustup >/dev/null 2>&1; then
+  log "install rustup (stable, minimal)"
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable --profile minimal
+  # shellcheck disable=SC1091
+  . "$HOME/.cargo/env" 2>/dev/null || true
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
 # 2. rustup targets -------------------------------------------------------
 log "rustup targets"
 RUSTUP_TARGETS=(

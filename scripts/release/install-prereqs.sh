@@ -88,13 +88,27 @@ log "  (winresource is a library — declared in Cargo.toml, not installed here)
 export PATH="$HOME/.local/bin:$PATH"
 mkdir -p "$HOME/.local/bin" "$HOME/.cache/drzdiff-tools"
 
-# appimagetool (legacy AppImageKit — supports `appimagetool SRC DEST` CLI)
+# appimagetool (legacy AppImageKit — supports `appimagetool SRC DEST` CLI).
+# Try multiple known-good URLs because GitHub releases URLs sometimes rotate.
 APPIMAGE_TOOL="$HOME/.local/bin/appimagetool"
 if [ ! -x "$APPIMAGE_TOOL" ]; then
   log "download appimagetool (legacy)"
-  curl -fL -o "$APPIMAGE_TOOL" \
-    "https://github.com/AppImage/AppImageKit/releases/download/13/obsolete-appimagetool-x86_64.AppImage"
-  chmod +x "$APPIMAGE_TOOL"
+  for URL in \
+    "https://github.com/AppImageCommunity/AppImageKit/releases/download/13/obsolete-appimagetool-x86_64.AppImage" \
+    "https://github.com/probonopd/go-appimage/releases/download/continuous/appimagetool-x86_64.AppImage" \
+    "https://github.com/AppImage/AppImageKit/releases/download/13/obsolete-appimagetool-x86_64.AppImage"; do
+    if curl -fL --retry 2 -o "$APPIMAGE_TOOL.tmp" "$URL" 2>/dev/null \
+       && [ -s "$APPIMAGE_TOOL.tmp" ]; then
+      mv "$APPIMAGE_TOOL.tmp" "$APPIMAGE_TOOL"
+      chmod +x "$APPIMAGE_TOOL"
+      log "  ok: $URL"
+      break
+    fi
+    rm -f "$APPIMAGE_TOOL.tmp"
+  done
+  if [ ! -x "$APPIMAGE_TOOL" ]; then
+    log "  WARN: appimagetool download failed from all mirrors — AppImage build will be skipped"
+  fi
 fi
 
 # png2icns (for .icns generation when iconutil unavailable)

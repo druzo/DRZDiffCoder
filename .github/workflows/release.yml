@@ -117,8 +117,7 @@ jobs:
       - name: Install cargo-wix + WiX Toolset
         run: |
           cargo install cargo-wix --locked
-          # WiX is typically pre-installed on windows-latest; only install if missing.
-          if ! (Get-Command candle.exe -ErrorAction SilentlyContinue) {
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
             choco install -y wixtoolset
           }
 
@@ -176,7 +175,7 @@ jobs:
 
       - name: Install dmg tools
         run: |
-          brew install libdmg-hfsplus cdrtools || true
+          brew install libdmg-hfsplus cdrtools imagemagick || true
 
       - name: Install pillow (icon generation fallback)
         run: |
@@ -259,7 +258,7 @@ jobs:
 
       - name: Install dmg tools
         run: |
-          brew install libdmg-hfsplus cdrtools || true
+          brew install libdmg-hfsplus cdrtools imagemagick || true
 
       - name: Install pillow (icon generation fallback)
         run: |

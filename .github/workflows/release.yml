@@ -190,6 +190,10 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.VERSION }}
           MACOSX_DEPLOYMENT_TARGET: "11.0"
+          # .cargo/config.toml hardcodes osxcross linker names; on a native
+          # macOS runner we use the system cc/clang.
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER: "cc"
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: "cc"
         run: |
           set -e
           STAGE="releases/${VERSION}/darwin-x86_64"
@@ -273,6 +277,10 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.VERSION }}
           MACOSX_DEPLOYMENT_TARGET: "11.0"
+          # .cargo/config.toml hardcodes osxcross linker names; on a native
+          # macOS runner we use the system cc/clang.
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER: "cc"
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: "cc"
         run: |
           set -e
           STAGE="releases/${VERSION}/darwin-arm64"

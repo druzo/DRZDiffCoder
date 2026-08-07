@@ -7,13 +7,18 @@ set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 VERSION="${VERSION:?missing VERSION}"
+ARCH="${1:-all}"
 
 cd "$REPO_ROOT"
 mkdir -p "releases/${VERSION}"
 
 # ---- Rust targets --------------------------------------------------------
-rustup target add x86_64-unknown-linux-gnu
-rustup target add aarch64-unknown-linux-gnu
+case "$ARCH" in
+  x86_64|all) rustup target add x86_64-unknown-linux-gnu ;;
+esac
+case "$ARCH" in
+  arm64|all) rustup target add aarch64-unknown-linux-gnu ;;
+esac
 
 # ---- Helpers -------------------------------------------------------------
 build_deb() {
@@ -193,7 +198,15 @@ SH
   echo "[linux] $folder done"
 }
 
-build_target x86_64-unknown-linux-gnu linux-x86_64 amd64 yes
-build_target aarch64-unknown-linux-gnu linux-arm64 arm64 no
+case "$ARCH" in
+  x86_64|all)
+    build_target x86_64-unknown-linux-gnu linux-x86_64 amd64 yes
+    ;;
+esac
+case "$ARCH" in
+  arm64|all)
+    build_target aarch64-unknown-linux-gnu linux-arm64 arm64 no
+    ;;
+esac
 
-echo "[linux] all done"
+echo "[linux] $ARCH done"

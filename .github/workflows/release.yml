@@ -42,8 +42,8 @@ jobs:
             exit 1
           fi
 
-  build-linux:
-    name: Linux (x86_64 + arm64)
+  build-linux-x86_64:
+    name: Linux x86_64
     needs: version
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -52,18 +52,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ./crates/drz-app -> target
+          shared-key: linux-x86_64
 
       - name: Install native build deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu dpkg-dev fakeroot \
-            libfuse2t64 file
+            dpkg-dev fakeroot libfuse2t64 file
 
-      - name: Build Linux artifacts
-        run: ./scripts/ci/build-linux-native.sh
+      - name: Build Linux x86_64 artifacts
+        run: ./scripts/ci/build-linux-native.sh x86_64
         env:
           VERSION: ${{ needs.version.outputs.value }}
 
@@ -72,6 +70,30 @@ jobs:
           name: drzdiff-linux-x86_64
           path: releases/${{ needs.version.outputs.value }}/linux-x86_64/*
           if-no-files-found: error
+
+  build-linux-arm64:
+    name: Linux arm64
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-arm64
+
+      - name: Install native build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu dpkg-dev fakeroot file
+
+      - name: Build Linux arm64 artifacts
+        run: ./scripts/ci/build-linux-native.sh arm64
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -155,7 +177,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [version, build-linux, build-windows, build-macos-x86_64, build-macos-arm64]
+    needs: [version, build-linux-x86_64, build-linux-arm64, build-windows, build-macos-x86_64, build-macos-arm64]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:

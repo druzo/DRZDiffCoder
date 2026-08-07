@@ -20,11 +20,15 @@ case "$ARCH" in
   *) echo "unknown arch $ARCH" >&2; exit 1 ;;
 esac
 
+# Override the osxcross linker from .cargo/config.toml on native macOS runners.
+LINKER_ENV="CARGO_TARGET_$(echo "$TARGET" | tr 'a-z-' 'A-Z_')_LINKER"
+export "$LINKER_ENV"=clang
+
 cd "$REPO_ROOT"
 mkdir -p "releases/${VERSION}/${FOLDER}"
 STAGE="${REPO_ROOT}/releases/${VERSION}/${FOLDER}"
 
-echo "[macos] building $TARGET -> $FOLDER"
+echo "[macos] building $TARGET -> $FOLDER (linker=$LINKER_ENV=${!LINKER_ENV})"
 
 rustup target add "$TARGET"
 

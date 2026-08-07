@@ -98,6 +98,10 @@ cp -R "$APP_DIR" "$STAGE_TMP/Applications/"
 hdiutil create -volname "$DMG_VOL" -srcfolder "$STAGE_TMP" -ov -format UDZO "$DMG_OUT"
 rm -rf "$STAGE_TMP"
 
+# The .app bundle is already inside the .zip and .dmg; remove the raw directory
+# so the artifact upload only contains release-ready files.
+rm -rf "$APP_DIR"
+
 # install.sh ----------------------------------------------------------------
 cat > "$STAGE/install.sh" <<'SH'
 #!/usr/bin/env bash
@@ -141,7 +145,6 @@ cd "$STAGE"
     [ "$f" = "SHA256SUMS" ] && continue
     [ -f "$f" ] && sha256sum "$f"
   done
-  find DRZDiff.app -type f -print0 | xargs -0 sha256sum
 } | sort -u > SHA256SUMS
 
 ls -la

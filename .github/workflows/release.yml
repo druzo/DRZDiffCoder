@@ -503,23 +503,18 @@ jobs:
           fail_on_unmatched_files: false
           draft: true
           files: |
-            dist/linux-x86_64/drzdiff
-            dist/linux-x86_64/drzdiff_*.deb
-            dist/linux-x86_64/drzdiff-*.rpm
-            dist/linux-x86_64/drzdiff-*.AppImage
-            dist/linux-x86_64/install.sh
-            dist/linux-arm64/drzdiff
-            dist/linux-arm64/drzdiff_*.deb
-            dist/linux-arm64/drzdiff-*.rpm
-            dist/linux-arm64/install.sh
-            dist/windows-x86_64/drzdiff.exe
-            dist/windows-x86_64/*.msi
-            dist/windows-x86_64/*.bat
-            dist/windows-x86_64/*.ps1
-            dist/darwin-x86_64/DRZDiff_*.dmg
-            dist/darwin-x86_64/DRZDiff_*.zip
-            dist/darwin-arm64/DRZDiff_*.dmg
-            dist/darwin-arm64/DRZDiff_*.zip
+            dist/drzdiff
+            dist/drzdiff.exe
+            dist/drzdiff_*.deb
+            dist/drzdiff_*.msi
+            dist/drzdiff-*.rpm
+            dist/drzdiff-*.AppImage
+            dist/DRZDiff_*.dmg
+            dist/DRZDiff_*.zip
+            dist/install.bat
+            dist/uninstall.bat
+            dist/install_shortcut.ps1
+            dist/install.sh
             dist/SHA256SUMS.txt
 
       - name: Publish release
